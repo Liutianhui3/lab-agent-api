@@ -58,7 +58,7 @@ uv run alembic upgrade head
 ## 启动服务
 
 ```bash
-uv run uvicorn main:app --app-dir src --reload
+uv run python -m uvicorn main:app --app-dir src --reload
 ```
 
 服务默认运行于 `http://127.0.0.1:8000`。交互式 API 文档：
