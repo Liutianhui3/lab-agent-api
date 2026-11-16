@@ -1,4 +1,7 @@
-from sqlalchemy import select
+from typing import Literal
+from uuid import UUID
+
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -6,7 +9,13 @@ from core.exceptions import AppException
 from core.security import get_password_hash, verify_password
 from models.user import User
 from schemas.auth import PasswordUpdateRequest
-from schemas.user import UserResponse, UserUpdateRequest
+from schemas.user import (
+    UserCreateRequest,
+    UserProfileUpdateRequest,
+    UserPageData,
+    UserResponse,
+    UserUpdateRequest,
+)
 
 
 def get_user_info(current_user: User) -> UserResponse:
@@ -14,8 +23,54 @@ def get_user_info(current_user: User) -> UserResponse:
     return UserResponse.model_validate(current_user)
 
 
+def get_user_page(
+    db: Session, page: int, size: int, keyword: str | None = None,
+    role: Literal["admin", "student"] | None = None
+) -> UserPageData[UserResponse]:
+    """组合角色与关键词条件查询用户，列表和总数使用相同筛选条件。"""
+    query = select(User)
+    count_query = select(func.count()).select_from(User)
+
+    if role is not None:
+        query = query.where(User.role == role)
+        count_query = count_query.where(User.role == role)
+
+    search = keyword.strip() if keyword else ""
+    if search:
+        pattern = f"%{search}%"
+        conditions = or_(
+            User.username.ilike(pattern),
+            User.name.ilike(pattern),
+            User.email.ilike(pattern),
+            User.phone.ilike(pattern),
+        )
+        query = query.where(conditions)
+        count_query = count_query.where(conditions)
+
+    total = db.scalar(count_query) or 0
+    admin_count = db.scalar(
+        select(func.count()).select_from(User).where(User.role == "admin")
+    ) or 0
+    disabled_count = db.scalar(
+        select(func.count()).select_from(User).where(User.status == 0)
+    ) or 0
+    global_total = db.scalar(select(func.count()).select_from(User)) or 0
+    users = db.scalars(
+        query.order_by(User.created_at.desc(), User.id).offset((page - 1) * size).limit(size)
+    ).all()
+    return UserPageData(
+        total=total,
+        items=[UserResponse.model_validate(user) for user in users],
+        page=page,
+        size=size,
+        global_total=global_total,
+        admin_count=admin_count,
+        disabled_count=disabled_count,
+    )
+
+
 def update_user(
-    db: Session, current_user: User, request: UserUpdateRequest
+    db: Session, current_user: User, request: UserProfileUpdateRequest | UserUpdateRequest
 ) -> UserResponse:
     """仅更新当前登录用户的资料；未提交的字段保持不变。"""
     updates = request.model_dump(exclude_unset=True)
@@ -80,6 +135,54 @@ def update_password(
     try:
         # 数据库只保存单向哈希，不保存明文密码。
         current_user.password = get_password_hash(new_password)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def create_user(db: Session, request: UserCreateRequest) -> UserResponse:
+    """创建用户并保存管理员输入密码的哈希。"""
+    user = User(
+        **request.model_dump(exclude={"password"}),
+        password=get_password_hash(request.password.get_secret_value()),
+    )
+    try:
+        db.add(user)
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        original = error.orig
+        if (
+            getattr(original, "args", (None,))[0] == 1062
+            or getattr(original, "sqlite_errorname", None) == "SQLITE_CONSTRAINT_UNIQUE"
+        ):
+            raise AppException(code=4009, message="用户名或邮箱已被使用", status_code=409) from error
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(user)
+    return get_user_info(user)
+
+
+def update_managed_user(
+    db: Session, user_id: UUID, request: UserUpdateRequest
+) -> UserResponse:
+    user = db.get(User, user_id)
+    if user is None:
+        raise AppException(code=4040, message="用户不存在", status_code=404)
+    return update_user(db, user, request)
+
+
+def delete_user(db: Session, user_id: UUID) -> None:
+    """通过带状态条件的删除，保证只有禁用账号可删除。"""
+    try:
+        result = db.execute(delete(User).where(User.id == user_id, User.status == 0))
+        if result.rowcount == 0:
+            if db.get(User, user_id) is None:
+                raise AppException(code=4040, message="用户不存在", status_code=404)
+            raise AppException(code=4003, message="只有禁用状态的用户才允许删除", status_code=400)
         db.commit()
     except Exception:
         db.rollback()

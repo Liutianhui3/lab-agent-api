@@ -1,6 +1,6 @@
 # Lab Agent API
 
-智能实验室预约系统后端 API，基于 FastAPI、SQLAlchemy、MySQL 和 Redis 构建，提供用户注册登录、个人资料管理和文件上传接口。
+智能实验室预约系统后端 API，基于 FastAPI、SQLAlchemy、MySQL 和 Redis 构建，提供用户与实验室管理、用户认证和文件上传接口。
 
 ## 技术栈
 
@@ -78,9 +78,34 @@ uv run python -m uvicorn main:app --app-dir src --reload
 | `GET` | `/api/v1/user/info` | 获取当前用户资料（需 Bearer Token） |
 | `POST` | `/api/v1/user/update` | 更新当前用户资料（需 Bearer Token） |
 | `POST` | `/api/v1/user/password` | 修改当前用户密码（需 Bearer Token） |
+| `GET` | `/api/v1/user/page` | 管理员分页查询用户及统计 |
+| `POST` | `/api/v1/user/create` | 管理员新增用户 |
+| `PUT` | `/api/v1/user/{user_id}` | 管理员更新用户 |
+| `DELETE` | `/api/v1/user/{user_id}` | 删除已禁用的用户（管理员） |
+| `GET` | `/api/v1/lab/page` | 管理员分页查询实验室及统计 |
+| `POST` | `/api/v1/lab/create` | 管理员新增实验室 |
+| `PUT` | `/api/v1/lab/{lab_id}` | 管理员更新实验室 |
+| `DELETE` | `/api/v1/lab/{lab_id}` | 删除已关闭的实验室（管理员） |
 | `POST` | `/api/v1/files/upload` | 上传文件或头像（multipart/form-data） |
 
 上传接口接收 `file` 文件字段，可选 `purpose` 字段为 `file` 或 `avatar`。上传后的文件通过 `/uploads/...` 路径访问。
+
+### 实验室管理
+
+实验室管理接口需要管理员 Bearer Token。分页查询支持以下参数：
+
+| 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `page` | 整数 | `1` | 页码，从 1 开始 |
+| `size` | 整数 | `10` | 每页条数，范围 1–100 |
+| `keyword` | 字符串 | 无 | 按实验室名称、业务编号或位置模糊搜索 |
+| `status` | 整数 | 无 | `0` 查询关闭实验室，`1` 查询开放实验室 |
+
+示例：`GET /api/v1/lab/page?page=1&size=6&keyword=&status=0`
+
+分页响应的 `data` 包含 `total`、`items`、`page`、`size`，以及不受筛选条件影响的全局统计：`global_total`、`open_count`、`closed_count`、`total_capacity`。
+
+新增和更新请求支持 `lab_code`、`name`、`location`、`capacity`、`description`、`img`、`open_time`、`close_time`、`status`。新增时业务编号和名称必填，容量默认为 `0`，状态默认为 `1`。更新为部分更新：未提交的字段保持不变，可空字段传 `null` 时清空。删除接口只允许删除 `status=0` 的关闭实验室；开放中的实验室需先关闭。
 
 ## 测试
 

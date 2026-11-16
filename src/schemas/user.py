@@ -4,11 +4,21 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StringConstraints,
+    field_validator,
+)
 from pydantic.alias_generators import to_camel
 
+from schemas.password import validate_password_rules
+from schemas.response import BaseResponse, PageData
 
-class UserUpdateRequest(BaseModel):
+
+class UserProfileUpdateRequest(BaseModel):
     """修改当前用户资料：未传字段不更新，可空字段传 null 表示清空。"""
 
     # 不接受 role、status、password 等字段，避免通过资料修改接口变更权限。
@@ -99,3 +109,51 @@ class UserResponse(BaseModel):
     status: Literal[0, 1] = Field(description="0-禁用，1-正常")
     created_at: datetime
     updated_at: datetime
+
+
+class UserPageData[T](PageData[T]):
+    """用户分页数据及不受筛选条件影响的全局统计。"""
+
+    global_total: int = Field(default=0, description="全体用户总数")
+    admin_count: int = Field(default=0, description="管理员总数")
+    disabled_count: int = Field(default=0, description="禁用账号总数")
+
+
+class UserPageResponse[T](BaseResponse[UserPageData[T]]):
+    """用户分页 API 响应。"""
+
+
+class UserCreateRequest(UserProfileUpdateRequest):
+    """管理员新增用户；密码遵循统一密码规则。"""
+
+    password: SecretStr = Field(
+        description="8–20 位，须包含大写字母、小写字母和数字；符号可选，不允许空格或中文"
+    )
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: SecretStr) -> SecretStr:
+        return validate_password_rules(value)
+
+    username: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)
+    ]
+    name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)
+    ]
+    role: Literal["student", "admin"] = "student"
+    status: Literal[0, 1] = 1
+
+
+class UserUpdateRequest(UserProfileUpdateRequest):
+    """管理员更新指定用户；未传字段保持不变。"""
+
+    role: Literal["student", "admin"] | None = None
+    status: Literal[0, 1] | None = None
+
+    @field_validator("role", "status")
+    @classmethod
+    def validate_required_fields(cls, value):
+        if value is None:
+            raise ValueError("角色和状态不能为 null")
+        return value

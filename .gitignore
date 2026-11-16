@@ -14,3 +14,6 @@ wheels/
 .env
 .env.*
 !.env.example
+
+# Runtime uploads are local data and should not be committed.
+src/uploads/*

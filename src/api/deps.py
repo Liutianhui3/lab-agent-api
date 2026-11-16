@@ -70,3 +70,15 @@ def get_current_user(
 
     # 返回用户对象，后续在路由中可以直接使用
     return user
+
+
+def get_current_admin(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """获取当前管理员；已登录但非管理员时返回 403。"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="权限不足",
+        )
+    return current_user
