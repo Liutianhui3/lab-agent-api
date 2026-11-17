@@ -82,7 +82,9 @@ uv run python -m uvicorn main:app --app-dir src --reload
 | `POST` | `/api/v1/user/create` | 管理员新增用户 |
 | `PUT` | `/api/v1/user/{user_id}` | 管理员更新用户 |
 | `DELETE` | `/api/v1/user/{user_id}` | 删除已禁用的用户（管理员） |
-| `GET` | `/api/v1/lab/page` | 管理员分页查询实验室及统计 |
+| `GET` | `/api/v1/lab/page` | 登录用户分页查询实验室及统计 |
+| `GET` | `/api/v1/lab/info?lab_code=LAB-101` | 登录用户按业务编号查询实验室详情 |
+| `GET` | `/api/v1/equipment/page` | 登录用户分页查询设备及统计 |
 | `POST` | `/api/v1/lab/create` | 管理员新增实验室 |
 | `PUT` | `/api/v1/lab/{lab_id}` | 管理员更新实验室 |
 | `DELETE` | `/api/v1/lab/{lab_id}` | 删除已关闭的实验室（管理员） |
@@ -92,7 +94,7 @@ uv run python -m uvicorn main:app --app-dir src --reload
 
 ### 实验室管理
 
-实验室管理接口需要管理员 Bearer Token。分页查询支持以下参数：
+实验室和设备的分页查询、按 `lab_code` 查询实验室详情需要登录用户 Bearer Token，普通用户也可访问；新增、编辑和删除仍需要管理员权限。实验室分页查询支持以下参数：
 
 | 参数 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |

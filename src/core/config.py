@@ -14,6 +14,15 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://127.0.0.1:6380/0"
 
+    LLM_API_KEY: str
+    LLM_BASE_URL: str
+    LLM_MODEL: str = "qwen-plus"
+
+    LLM_TEMPERATURE: float = 0.7
+    LLM_MAX_TOKENS: int = 4096
+    LLM_TIMEOUT: int = 60
+    LLM_MAX_RETRIES: int = 2
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

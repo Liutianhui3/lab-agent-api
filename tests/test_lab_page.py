@@ -9,11 +9,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from core.database import Base
-from api.deps import get_current_admin
+from api.deps import get_current_admin, get_current_user
 from core.database import get_db
 from main import app
 from models.user import User
 from models.lab import Lab
+from models.equipment import Equipment
 from core.exceptions import AppException
 from schemas.lab import (
     LabCreateRequest,
@@ -51,6 +52,7 @@ class LabPageTests(unittest.TestCase):
         self.db.add(self.admin)
         self.db.commit()
         app.dependency_overrides[get_current_admin] = lambda: self.admin
+        app.dependency_overrides[get_current_user] = lambda: self.admin
         app.dependency_overrides[get_db] = lambda: self.db
 
     def tearDown(self):
@@ -131,6 +133,18 @@ class LabPageTests(unittest.TestCase):
         with self.assertRaises(AppException) as error:
             delete_lab(self.db, 1)
         self.assertEqual(error.exception.message, "只有关闭状态的实验室才允许删除")
+
+    def test_cannot_delete_closed_lab_with_equipment(self):
+        self.db.add(
+            Equipment(code="EQ-LAB-103", name="关联设备", lab_id=3, quantity=1, status=1)
+        )
+        self.db.commit()
+
+        with self.assertRaises(AppException) as error:
+            delete_lab(self.db, 3)
+
+        self.assertEqual(error.exception.message, "实验室仍关联设备，无法删除")
+        self.assertIsNotNone(self.db.get(Lab, 3))
 
     def test_duplicate_code_and_missing_lab(self):
         with self.assertRaises(AppException):

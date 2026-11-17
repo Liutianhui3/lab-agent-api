@@ -1,9 +1,9 @@
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from api.deps import get_current_admin
+from api.deps import get_current_admin, get_current_user
 from core.database import get_db
 from models.user import User
 from schemas.lab import (
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/lab", tags=["实验室管理"])
 
 @router.get("/page", response_model=LabPageResponse[LabResponse])
 def get_lab_page(
-    _current_admin: Annotated[User, Depends(get_current_admin)],
+    _current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
     page: int = Query(default=1, ge=1, description="页码"),
     size: int = Query(default=10, ge=1, le=100, description="每页条数"),
@@ -31,11 +31,23 @@ def get_lab_page(
         default=None, max_length=255, description="搜索实验室名称、编号或位置"
     ),
 ) -> LabPageResponse[LabResponse]:
-    """管理员分页查询实验室及全局统计。"""
+    """登录用户分页查询实验室及全局统计。"""
     data = lab_service.get_lab_page(
         db, page=page, size=size, keyword=keyword, status=status
     )
     return LabPageResponse[LabResponse](code=200, message="success", data=data)
+
+
+@router.get("/info", response_model=BaseResponse[LabResponse])
+def get_lab_info(
+    _current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    lab_code: str = Query(min_length=1, max_length=50, description="实验室业务编号"),
+) -> BaseResponse[LabResponse]:
+    """登录用户按 lab_code 精确查询实验室详情。"""
+    return BaseResponse[LabResponse].success(
+        data=lab_service.get_lab_by_code(db, lab_code)
+    )
 
 
 @router.post("/create", response_model=BaseResponse[LabResponse])

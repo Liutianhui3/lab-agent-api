@@ -3,6 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.exceptions import AppException
+from models.equipment import Equipment
 from models.lab import Lab
 from schemas.lab import LabCreateRequest, LabPageData, LabResponse, LabUpdateRequest
 
@@ -68,6 +69,14 @@ def get_lab_page(
     )
 
 
+def get_lab_by_code(db: Session, lab_code: str) -> LabResponse:
+    """按业务编号精确查询实验室。"""
+    lab = db.scalar(select(Lab).where(Lab.lab_code == lab_code))
+    if lab is None:
+        raise AppException(code=4040, message="实验室不存在", status_code=404)
+    return LabResponse.model_validate(lab)
+
+
 def create_lab(db: Session, request: LabCreateRequest) -> LabResponse:
     """创建实验室。"""
     if db.scalar(select(Lab.id).where(Lab.lab_code == request.lab_code)) is not None:
@@ -126,17 +135,24 @@ def update_lab(db: Session, lab_id: int, request: LabUpdateRequest) -> LabRespon
 
 
 def delete_lab(db: Session, lab_id: int) -> None:
-    """只允许删除关闭状态的实验室。"""
+    """只允许删除关闭且未关联设备的实验室。"""
     try:
-        result = db.execute(delete(Lab).where(Lab.id == lab_id, Lab.status == 0))
-        if result.rowcount == 0:
-            if db.get(Lab, lab_id) is None:
-                raise AppException(code=4040, message="实验室不存在", status_code=404)
+        lab = db.get(Lab, lab_id)
+        if lab is None:
+            raise AppException(code=4040, message="实验室不存在", status_code=404)
+        if lab.status != 0:
             raise AppException(
                 code=4003,
                 message="只有关闭状态的实验室才允许删除",
                 status_code=400,
             )
+        if db.scalar(select(Equipment.id).where(Equipment.lab_id == lab_id)) is not None:
+            raise AppException(
+                code=4004,
+                message="实验室仍关联设备，无法删除",
+                status_code=400,
+            )
+        db.execute(delete(Lab).where(Lab.id == lab_id))
         db.commit()
     except Exception:
         db.rollback()
