@@ -1,3 +1,6 @@
+from contextlib import asynccontextmanager
+
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -5,8 +8,30 @@ from fastapi.staticfiles import StaticFiles
 from api.v1.api import api_router
 from core.config import UPLOAD_DIR
 from core.exceptions import register_exception_handlers
+from tasks.reservation_tasks import cancel_expired_reservations
 
-app = FastAPI(title="My FastAPI App")
+scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.add_job(
+        cancel_expired_reservations,
+        trigger="interval",
+        hours=12,
+        id="cancel-expired-reservations",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.start()
+    try:
+        yield
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="My FastAPI App", lifespan=lifespan)
 
 # ==================== 配置 CORS 跨域 ====================
 # 实际企业项目中，origins 通常会通过 pydantic-settings 从环境变量或配置文件读取

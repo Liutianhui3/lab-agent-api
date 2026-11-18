@@ -1,3 +1,4 @@
+from typing import TYPE_CHECKING
 from datetime import time
 
 from sqlalchemy import (
@@ -9,10 +10,14 @@ from sqlalchemy import (
     Text,
     Time,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base
 from models.mixins import TimestampMixin
+
+
+if TYPE_CHECKING:
+    from models.reservation import Reservation
 
 
 class Lab(TimestampMixin, Base):
@@ -45,3 +50,5 @@ class Lab(TimestampMixin, Base):
     status: Mapped[int] = mapped_column(
         SmallInteger, default=1, server_default="1", comment="状态：0-关闭，1-开放"
     )
+
+    reservations: Mapped[list["Reservation"]] = relationship(back_populates="lab")

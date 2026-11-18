@@ -1,10 +1,15 @@
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import CheckConstraint, Enum, SmallInteger, String, Uuid
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base
 from models.mixins import TimestampMixin
+
+
+if TYPE_CHECKING:
+    from models.reservation import Reservation
 
 
 class User(TimestampMixin, Base):
@@ -38,3 +43,5 @@ class User(TimestampMixin, Base):
         server_default="1",
         comment="状态：0-禁用，1-正常",
     )
+
+    reservations: Mapped[list["Reservation"]] = relationship(back_populates="user")

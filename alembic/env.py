@@ -10,6 +10,7 @@ from alembic import context
 from core.config import settings
 from core.database import Base
 from models.equipment import Equipment  # noqa: F401 -- 注册 equipments 表
+from models.reservation import Reservation  # noqa: F401 -- 注册 reservations 表
 from models.lab import Lab  # noqa: F401 -- 注册 labs 表
 from models.user import User  # noqa: F401 -- 导入模型，将 users 表注册到 Base.metadata
 

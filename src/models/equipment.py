@@ -16,6 +16,7 @@ from models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
     from models.lab import Lab
+    from models.reservation import Reservation
 
 
 class Equipment(TimestampMixin, Base):
@@ -51,3 +52,5 @@ class Equipment(TimestampMixin, Base):
     status: Mapped[int] = mapped_column(
         SmallInteger, default=1, server_default="1", comment="状态：0-维修，1-正常"
     )
+
+    reservations: Mapped[list["Reservation"]] = relationship(back_populates="equipment")
