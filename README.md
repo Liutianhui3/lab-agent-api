@@ -192,3 +192,24 @@ curl -N -X POST http://localhost:8000/api/v1/chat/stream \
 
 浏览器请使用 `fetch` 的 POST 请求并增量读取响应；原生 `EventSource` 不支持该 POST 请求。
 解析 SSE 时需要缓存网络分片，按空行拆分事件，不能假设一次读取就是一个完整事件。
+
+
+### 实验室 Agent（第一阶段）
+
+普通聊天和 SSE 聊天均经过 LangGraph：
+
+```text
+START → route_request → respond_out_of_scope → END
+                     ↘ respond_pending      → END
+```
+
+- `src/schemas/agent.py`：意图枚举、路由结构化输出。
+- `src/services/agent/workflow.py`：State、范围限制 Prompt、节点与条件边。
+- `src/services/llm/llm_service.py`：模型分类调用及现有聊天入口适配。
+- `route_request` 使用模型的 function calling 结构化输出识别最新请求，并携带历史上下文。
+- 范围外请求区分无关问题、不支持的操作和受限能力，由模型生成简短说明；生成失败、空回复或回复过长时使用对应模板兜底。问候、意图不明、尚未实现的业务请求分别返回明确提示。
+- 本阶段未接入知识检索、业务工具和 checkpoint，不执行预约或取消操作。
+- SSE 事件协议保持不变；分类完成后返回一个公开回复 delta，不输出分类 JSON 或内部分类依据。
+- 分类失败仍走现有聊天错误与回滚流程，不退回无限制聊天。
+
+新增测试使用模拟模型验证路由与边界；真实服务商的结构化输出兼容性需配置模型后联调。

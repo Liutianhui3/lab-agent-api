@@ -3,7 +3,8 @@ import time
 from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from core.exceptions import AppException, AuthException, ForbiddenException
 from core.redis_client import redis_client
@@ -27,7 +28,7 @@ class UserAlreadyExistsError(AppException):
         super().__init__(code=4009, message=message, status_code=409)
 
 
-def register_user(db: Session, request: RegisterRequest) -> User:
+async def register_user(db: AsyncSession, request: RegisterRequest) -> User:
     """
     用户注册业务逻辑：
     1. 使用 passlib 对明文密码进行 bcrypt 哈希加密
@@ -36,7 +37,9 @@ def register_user(db: Session, request: RegisterRequest) -> User:
     """
 
     # 1. 密码加密
-    hashed_pwd = get_password_hash(request.password.get_secret_value())
+    hashed_pwd = await run_in_threadpool(
+        get_password_hash, request.password.get_secret_value()
+    )
 
     # 2. 构造 ORM 对象
     db_user = User(
@@ -51,27 +54,27 @@ def register_user(db: Session, request: RegisterRequest) -> User:
     try:
         # 3. 写入数据库会话并提交
         db.add(db_user)
-        db.commit()
-        db.refresh(db_user)  # 刷新以获取数据库自动生成的字段（如 id、created_at 等）
+        await db.commit()
+        await db.refresh(db_user)  # 刷新以获取数据库自动生成的字段（如 id、created_at 等）
         return db_user
 
     except IntegrityError as error:
         # 4. 发生唯一键冲突时，必须先回滚事务，保证数据库连接干净
-        db.rollback()
+        await db.rollback()
 
         # 5. 将底层的数据库错误转译为你们统一的自定义业务异常
         raise UserAlreadyExistsError(message="用户名或邮箱已被使用") from error
 
 
-def login_user(db: Session, request: LoginRequest) -> LoginResponse:
+async def login_user(db: AsyncSession, request: LoginRequest) -> LoginResponse:
     """校验用户名、密码和账号状态，成功后签发 JWT 并返回用户资料。"""
     # 1. 按唯一用户名查找账号；登录仅查询数据库，不需要 commit。
-    user = db.scalar(select(User).where(User.username == request.username))
+    user = await db.scalar(select(User).where(User.username == request.username))
 
     # 2. 使用哈希校验密码，不能直接比较明文和数据库中的密码哈希。
     # 用户不存在或密码错误时统一提示，避免通过错误信息判断用户名是否存在。
-    if user is None or not verify_password(
-        request.password.get_secret_value(), user.password
+    if user is None or not await run_in_threadpool(
+        verify_password, request.password.get_secret_value(), user.password
     ):
         raise AuthException(message="用户名或密码错误")
 
