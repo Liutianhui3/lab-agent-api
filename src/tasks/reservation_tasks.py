@@ -7,11 +7,11 @@ from core.database import SessionLocal
 from models.reservation import Reservation
 
 
-def cancel_expired_reservations() -> None:
+async def cancel_expired_reservations() -> None:
     now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
 
-    with SessionLocal() as db:
-        db.execute(
+    async with SessionLocal.begin() as db:
+        await db.execute(
             update(Reservation)
             .where(
                 Reservation.status == 0,
@@ -25,4 +25,3 @@ def cancel_expired_reservations() -> None:
             )
             .values(status=3)
         )
-        db.commit()

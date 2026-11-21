@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import oauth2_scheme
 from core.database import get_db
@@ -12,20 +12,20 @@ from services.auth_service import login_user, logout_user, register_user
 
 router = APIRouter(prefix="/auth", tags=["权限验证"])
 
-SessionDependency = Annotated[Session, Depends(get_db)]
+SessionDependency = Annotated[AsyncSession, Depends(get_db, scope="function")]
 
 
 @router.post("/register", response_model=BaseResponse[None])
-def register(request: RegisterRequest, db: SessionDependency) -> UserResponse:
+async def register(request: RegisterRequest, db: SessionDependency) -> UserResponse:
     # 逻辑写在sevice层
-    register_user(db, request)
+    await register_user(db, request)
     return BaseResponse.success(message="注册成功")
 
 
 @router.post("/login", response_model=BaseResponse[LoginResponse])
-def login(request: LoginRequest, db: SessionDependency) -> BaseResponse[LoginResponse]:
+async def login(request: LoginRequest, db: SessionDependency) -> BaseResponse[LoginResponse]:
     # 路由负责接收参数和包装响应；身份校验、状态检查和签发令牌由 service 完成。
-    data = login_user(db, request)
+    data = await login_user(db, request)
     return BaseResponse[LoginResponse].success(data=data, message="登录成功")
 
 

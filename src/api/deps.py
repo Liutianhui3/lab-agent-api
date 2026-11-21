@@ -3,7 +3,8 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from core.database import get_db
 from core.security import decode_access_token
@@ -15,8 +16,8 @@ from services.auth_service import is_token_revoked
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
-def get_current_user(
-    db: Annotated[Session, Depends(get_db)],
+async def get_current_user(
+    db: Annotated[AsyncSession, Depends(get_db, scope="function")],
     token: Annotated[str, Depends(oauth2_scheme)],
 ) -> User:
     """
@@ -44,7 +45,7 @@ def get_current_user(
         raise credentials_exception
 
     # JWT 签名有效也可能已经登出；所有受保护接口都必须检查撤销记录。
-    if is_token_revoked(payload["jti"]):
+    if await run_in_threadpool(is_token_revoked, payload["jti"]):
         raise credentials_exception
 
     # 3. 提取并验证 UUID 用户 ID
@@ -57,7 +58,7 @@ def get_current_user(
         raise invalid_credentials_exception from None
 
     # 4. 去数据库查询用户真实状态（防止用户被删除或禁用后，旧 Token 仍然能用）
-    user = db.get(User, user_uuid)
+    user = await db.get(User, user_uuid)
     if user is None:
         raise invalid_credentials_exception
 
@@ -82,3 +83,7 @@ def get_current_admin(
             detail="权限不足",
         )
     return current_user
+
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+CurrentAdmin = Annotated[User, Depends(get_current_admin)]

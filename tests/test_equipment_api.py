@@ -1,11 +1,9 @@
-import asyncio
 import json
 import unittest
 from uuid import uuid4
 from urllib.parse import urlencode
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from api.deps import get_current_admin, get_current_user
@@ -24,20 +22,21 @@ from services.equipment_service import (
 )
 
 
-class EquipmentApiTests(unittest.TestCase):
-    def setUp(self):
-        self.engine = create_engine(
-            "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
+class EquipmentApiTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine(
+            "sqlite+aiosqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
         )
-        Base.metadata.create_all(self.engine)
-        self.db = Session(self.engine)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.db = AsyncSession(self.engine, expire_on_commit=False)
         self.db.add_all(
             [
                 Lab(id=1, lab_code="LAB-101", name="纳米实验室", capacity=10, status=1),
                 Lab(id=2, lab_code="LAB-102", name="光学实验室", capacity=8, status=1),
             ]
         )
-        self.db.flush()
+        await self.db.flush()
         self.db.add_all(
             [
                 Equipment(id=1, code="EQ-101", name="电子显微镜", lab_id=1, quantity=2, status=1),
@@ -49,17 +48,17 @@ class EquipmentApiTests(unittest.TestCase):
             id=uuid4(), username="equipment-admin", password="hash", name="管理员", role="admin", status=1
         )
         self.db.add(self.admin)
-        self.db.commit()
+        await self.db.commit()
         app.dependency_overrides[get_current_admin] = lambda: self.admin
         app.dependency_overrides[get_current_user] = lambda: self.admin
         app.dependency_overrides[get_db] = lambda: self.db
 
-    def tearDown(self):
+    async def asyncTearDown(self):
         app.dependency_overrides.clear()
-        self.db.close()
-        self.engine.dispose()
+        await self.db.close()
+        await self.engine.dispose()
 
-    def _request(self, method, path, query=None, body=None):
+    async def _request(self, method, path, query=None, body=None):
         async def run():
             events = []
             body_bytes = json.dumps(body).encode() if body is not None else b""
@@ -100,10 +99,10 @@ class EquipmentApiTests(unittest.TestCase):
             )
             return status_code, json.loads(response_body)
 
-        return asyncio.run(run())
+        return await run()
 
-    def test_admin_page_endpoint_filters_and_returns_global_stats(self):
-        status_code, body = self._request(
+    async def test_admin_page_endpoint_filters_and_returns_global_stats(self):
+        status_code, body = await self._request(
             "GET", "/api/v1/equipment/page", {"page": 1, "size": 1, "lab_id": 1, "status": 1}
         )
         self.assertEqual(status_code, 200)
@@ -114,65 +113,65 @@ class EquipmentApiTests(unittest.TestCase):
             (3, 2, 1, 7),
         )
 
-    def test_student_queries_and_admin_only_mutations(self):
+    async def test_student_queries_and_admin_only_mutations(self):
         del app.dependency_overrides[get_current_admin]
         student = User(
             id=uuid4(), username="student", password="hash", name="学生", role="student", status=1
         )
         app.dependency_overrides[get_current_user] = lambda: student
         for path in ("/api/v1/lab/page", "/api/v1/equipment/page"):
-            status_code, _ = self._request("GET", path)
+            status_code, _ = await self._request("GET", path)
             self.assertEqual(status_code, 200)
 
-        status_code, body = self._request("GET", "/api/v1/lab/info", {"lab_code": "LAB-101"})
+        status_code, body = await self._request("GET", "/api/v1/lab/info", {"lab_code": "LAB-101"})
         self.assertEqual(status_code, 200)
         self.assertEqual(body["data"]["labCode"], "LAB-101")
-        status_code, _ = self._request("GET", "/api/v1/lab/info", {"lab_code": "missing"})
+        status_code, _ = await self._request("GET", "/api/v1/lab/info", {"lab_code": "missing"})
         self.assertEqual(status_code, 404)
-        status_code, _ = self._request("GET", "/api/v1/lab/info")
+        status_code, _ = await self._request("GET", "/api/v1/lab/info")
         self.assertEqual(status_code, 422)
 
         for resource in ("lab", "equipment"):
             for method, suffix, body in (
                 ("POST", "create", {}), ("PUT", "1", {}), ("DELETE", "1", None)
             ):
-                status_code, _ = self._request(method, f"/api/v1/{resource}/{suffix}", body=body)
+                status_code, _ = await self._request(method, f"/api/v1/{resource}/{suffix}", body=body)
                 self.assertEqual(status_code, 403)
 
         del app.dependency_overrides[get_current_user]
         for path in ("/api/v1/lab/page", "/api/v1/equipment/page", "/api/v1/lab/info"):
-            status_code, _ = self._request("GET", path, {"lab_code": "LAB-101"})
+            status_code, _ = await self._request("GET", path, {"lab_code": "LAB-101"})
             self.assertEqual(status_code, 401)
 
-    def test_create_update_delete_and_validation_errors(self):
-        created = create_equipment(
+    async def test_create_update_delete_and_validation_errors(self):
+        created = await create_equipment(
             self.db,
             EquipmentCreateRequest(code="EQ-301", name="新设备", lab_id=2, quantity=3),
         )
         self.assertEqual((created.quantity, created.status), (3, 1))
-        updated = update_equipment(
+        updated = await update_equipment(
             self.db, created.id, EquipmentUpdateRequest(name="更新设备", status=0)
         )
         self.assertEqual((updated.name, updated.status), ("更新设备", 0))
-        delete_equipment(self.db, created.id)
-        self.assertIsNone(self.db.get(Equipment, created.id))
+        await delete_equipment(self.db, created.id)
+        self.assertIsNone(await self.db.get(Equipment, created.id))
 
         with self.assertRaises(AppException):
-            create_equipment(
+            await create_equipment(
                 self.db, EquipmentCreateRequest(code="EQ-101", name="重复编号", lab_id=1)
             )
         with self.assertRaises(AppException):
-            create_equipment(
+            await create_equipment(
                 self.db, EquipmentCreateRequest(code="EQ-401", name="无效实验室", lab_id=999)
             )
         with self.assertRaises(AppException):
-            delete_equipment(self.db, 999)
+            await delete_equipment(self.db, 999)
 
-    def test_delete_endpoint_and_admin_dependency(self):
-        status_code, body = self._request("DELETE", "/api/v1/equipment/1")
+    async def test_delete_endpoint_and_admin_dependency(self):
+        status_code, body = await self._request("DELETE", "/api/v1/equipment/1")
         self.assertEqual((status_code, body["message"]), (200, "删除成功"))
         app.dependency_overrides.clear()
-        status_code, _ = self._request("GET", "/api/v1/equipment/page")
+        status_code, _ = await self._request("GET", "/api/v1/equipment/page")
         self.assertEqual(status_code, 401)
 
 

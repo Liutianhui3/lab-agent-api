@@ -1,8 +1,8 @@
 import unittest
 from datetime import date, time, timedelta
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from pydantic import ValidationError
 
 from core.database import Base
@@ -15,46 +15,49 @@ from schemas.reservation import ReservationCreateRequest
 from services.reservation_service import create_reservation
 
 
-class ReservationServiceTests(unittest.TestCase):
-    def setUp(self):
-        self.engine = create_engine("sqlite://")
-        Base.metadata.create_all(self.engine)
-        self.db = Session(self.engine)
+class ReservationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite://")
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.db = AsyncSession(self.engine, expire_on_commit=False)
         self.user = User(username="booker", password="hash", name="预约人")
         self.lab = Lab(lab_code="L1", name="实验室", open_time=time(8), close_time=time(18))
         self.db.add_all([self.user, self.lab])
-        self.db.flush()
+        await self.db.flush()
         self.equipment = Equipment(code="E1", name="设备", lab_id=self.lab.id)
         self.other = Equipment(code="E2", name="其他设备", lab_id=self.lab.id)
         self.db.add_all([self.equipment, self.other])
-        self.db.commit()
+        await self.db.commit()
         self.day = date.today() + timedelta(days=7)
 
-    def tearDown(self):
-        self.db.close()
-        self.engine.dispose()
+    async def asyncTearDown(self):
+        await self.db.close()
+        await self.engine.dispose()
 
     def request(self, **updates):
         data = dict(lab_id=self.lab.id, date=self.day, start_time=time(9), end_time=time(10))
         data.update(updates)
         return ReservationCreateRequest(**data)
 
-    def create(self, **updates):
-        return create_reservation(self.db, self.user, self.request(**updates))
+    async def create(self, **updates):
+        return await create_reservation(self.db, self.user, self.request(**updates))
 
-    def reject(self, **updates):
+    async def reject(self, **updates):
         with self.assertRaises(AppException):
-            self.create(**updates)
+            await self.create(**updates)
+        for item in (self.user, self.lab, self.equipment, self.other):
+            await self.db.refresh(item)
 
-    def test_create_lab_and_equipment(self):
-        reservation = self.create()
+    async def test_create_lab_and_equipment(self):
+        reservation = await self.create()
         self.assertEqual(reservation.status, 0)
         self.assertEqual(reservation.user_id, self.user.id)
         self.assertIsNone(reservation.equipment_id)
-        equipment_booking = self.create(equipment_id=self.equipment.id, start_time=time(10), end_time=time(11))
+        equipment_booking = await self.create(equipment_id=self.equipment.id, start_time=time(10), end_time=time(11))
         self.assertEqual(equipment_booking.equipment_id, self.equipment.id)
 
-    def test_invalid_times_and_dates(self):
+    async def test_invalid_times_and_dates(self):
         for changes in (
             dict(start_time=time(10)),
             dict(start_time=time(11)),
@@ -63,79 +66,79 @@ class ReservationServiceTests(unittest.TestCase):
             dict(start_time="09:00:00+08:00"),
         ):
             with self.subTest(changes=changes):
-                self.reject(**changes)
-        self.assertIsNone(self.db.scalar(select(Reservation.id)))
+                await self.reject(**changes)
+        self.assertIsNone(await self.db.scalar(select(Reservation.id)))
 
-    def test_past_date_rejected_by_request_schema(self):
+    async def test_past_date_rejected_by_request_schema(self):
         with self.assertRaises(ValidationError):
             self.request(date=date.today() - timedelta(days=1))
 
-    def test_closed_lab(self):
+    async def test_closed_lab(self):
         self.lab.status = 0
-        self.db.commit()
-        self.reject()
+        await self.db.commit()
+        await self.reject()
 
-    def test_missing_resources(self):
-        self.reject(lab_id=999)
-        self.reject(equipment_id=999)
+    async def test_missing_resources(self):
+        await self.reject(lab_id=999)
+        await self.reject(equipment_id=999)
 
-    def test_unavailable_equipment(self):
+    async def test_unavailable_equipment(self):
         self.equipment.status = 0
-        self.db.commit()
-        self.reject(equipment_id=self.equipment.id)
+        await self.db.commit()
+        await self.reject(equipment_id=self.equipment.id)
         self.equipment.status = 1
         self.equipment.quantity = 0
-        self.db.commit()
-        self.reject(equipment_id=self.equipment.id)
+        await self.db.commit()
+        await self.reject(equipment_id=self.equipment.id)
 
-    def test_equipment_in_another_lab(self):
+    async def test_equipment_in_another_lab(self):
         lab = Lab(lab_code="L2", name="其他实验室")
         self.db.add(lab)
-        self.db.flush()
+        await self.db.flush()
         self.equipment.lab_id = lab.id
-        self.db.commit()
-        self.reject(equipment_id=self.equipment.id)
+        await self.db.commit()
+        await self.reject(equipment_id=self.equipment.id)
 
-    def test_lab_blocks_equipment(self):
-        self.create()
-        self.reject(equipment_id=self.equipment.id)
+    async def test_lab_blocks_equipment(self):
+        await self.create()
+        await self.reject(equipment_id=self.equipment.id)
 
-    def test_equipment_blocks_lab_and_same_equipment(self):
-        self.create(equipment_id=self.equipment.id)
-        self.reject()
-        self.reject(equipment_id=self.equipment.id)
-        self.create(equipment_id=self.other.id)
+    async def test_equipment_blocks_lab_and_same_equipment(self):
+        await self.create(equipment_id=self.equipment.id)
+        await self.reject()
+        await self.reject(equipment_id=self.equipment.id)
+        await self.create(equipment_id=self.other.id)
 
-    def test_conflict_statuses(self):
-        reservation = self.create()
+    async def test_conflict_statuses(self):
+        reservation = await self.create()
         reservation.status = 1
-        self.db.commit()
-        self.reject()
+        await self.db.commit()
+        await self.reject()
         reservation.status = 2
-        self.db.commit()
-        replacement = self.create()
+        await self.db.commit()
+        replacement = await self.create()
         replacement.status = 3
-        self.db.commit()
-        self.create()
+        await self.db.commit()
+        await self.create()
 
-    def test_other_day_and_opening_boundaries(self):
-        self.create(start_time=time(8), end_time=time(18))
-        self.create(date=self.day + timedelta(days=1))
+    async def test_other_day_and_opening_boundaries(self):
+        await self.create(start_time=time(8), end_time=time(18))
+        await self.create(date=self.day + timedelta(days=1))
 
-    def test_disabled_user(self):
+    async def test_disabled_user(self):
         self.user.status = 0
-        self.db.commit()
-        self.reject()
+        await self.db.commit()
+        await self.reject()
 
-    def test_all_user_roles_can_reserve(self):
+    async def test_all_user_roles_can_reserve(self):
         for index, role in enumerate(("student", "admin")):
             with self.subTest(role=role):
                 self.user.role = role
-                self.db.commit()
-                self.create(date=self.day + timedelta(days=index))
+                await self.db.commit()
+                await self.create(date=self.day + timedelta(days=index))
 
-    def test_unconfigured_opening_hours(self):
+    async def test_unconfigured_opening_hours(self):
         self.lab.open_time = None
         self.lab.close_time = None
-        self.db.commit()
-        self.create(start_time=time(1), end_time=time(23))
+        await self.db.commit()
+        await self.create(start_time=time(1), end_time=time(23))

@@ -1,20 +1,19 @@
 from contextlib import asynccontextmanager
 
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.v1.api import api_router
 from core.config import UPLOAD_DIR
+from core.database import engine
 from core.exceptions import register_exception_handlers
 from tasks.reservation_tasks import cancel_expired_reservations
 
-scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
     scheduler.add_job(
         cancel_expired_reservations,
         trigger="interval",
@@ -29,6 +28,7 @@ async def lifespan(app: FastAPI):
     finally:
         if scheduler.running:
             scheduler.shutdown(wait=False)
+        await engine.dispose()
 
 
 app = FastAPI(title="My FastAPI App", lifespan=lifespan)

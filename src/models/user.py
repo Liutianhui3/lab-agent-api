@@ -7,8 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from core.database import Base
 from models.mixins import TimestampMixin
 
-
 if TYPE_CHECKING:
+    from models.conversation import Conversation
     from models.reservation import Reservation
 
 
@@ -45,3 +45,6 @@ class User(TimestampMixin, Base):
     )
 
     reservations: Mapped[list["Reservation"]] = relationship(back_populates="user")
+    conversations: Mapped[list["Conversation"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )

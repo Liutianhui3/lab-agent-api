@@ -1,6 +1,6 @@
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import AppException
 from models.equipment import Equipment
@@ -16,8 +16,8 @@ def _is_unique_violation(error: IntegrityError) -> bool:
     )
 
 
-def get_lab_page(
-    db: Session,
+async def get_lab_page(
+    db: AsyncSession,
     page: int,
     size: int,
     keyword: str | None = None,
@@ -42,20 +42,26 @@ def get_lab_page(
         query = query.where(conditions)
         count_query = count_query.where(conditions)
 
-    total = db.scalar(count_query) or 0
-    global_total = db.scalar(select(func.count()).select_from(Lab)) or 0
-    open_count = db.scalar(
-        select(func.count()).select_from(Lab).where(Lab.status == 1)
-    ) or 0
-    closed_count = db.scalar(
-        select(func.count()).select_from(Lab).where(Lab.status == 0)
-    ) or 0
-    total_capacity = db.scalar(select(func.coalesce(func.sum(Lab.capacity), 0))) or 0
+    total = await db.scalar(count_query) or 0
+    global_total = await db.scalar(select(func.count()).select_from(Lab)) or 0
+    open_count = (
+        await db.scalar(select(func.count()).select_from(Lab).where(Lab.status == 1))
+        or 0
+    )
+    closed_count = (
+        await db.scalar(select(func.count()).select_from(Lab).where(Lab.status == 0))
+        or 0
+    )
+    total_capacity = (
+        await db.scalar(select(func.coalesce(func.sum(Lab.capacity), 0))) or 0
+    )
 
-    labs = db.scalars(
-        query.order_by(Lab.created_at.desc(), Lab.id)
-        .offset((page - 1) * size)
-        .limit(size)
+    labs = (
+        await db.scalars(
+            query.order_by(Lab.created_at.desc(), Lab.id)
+            .offset((page - 1) * size)
+            .limit(size)
+        )
     ).all()
     return LabPageData(
         total=total,
@@ -69,40 +75,45 @@ def get_lab_page(
     )
 
 
-def get_lab_by_code(db: Session, lab_code: str) -> LabResponse:
+async def get_lab_by_code(db: AsyncSession, lab_code: str) -> LabResponse:
     """按业务编号精确查询实验室。"""
-    lab = db.scalar(select(Lab).where(Lab.lab_code == lab_code))
+    lab = await db.scalar(select(Lab).where(Lab.lab_code == lab_code))
     if lab is None:
         raise AppException(code=4040, message="实验室不存在", status_code=404)
     return LabResponse.model_validate(lab)
 
 
-def create_lab(db: Session, request: LabCreateRequest) -> LabResponse:
+async def create_lab(db: AsyncSession, request: LabCreateRequest) -> LabResponse:
     """创建实验室。"""
-    if db.scalar(select(Lab.id).where(Lab.lab_code == request.lab_code)) is not None:
+    if (
+        await db.scalar(select(Lab.id).where(Lab.lab_code == request.lab_code))
+        is not None
+    ):
         raise AppException(code=4008, message="实验室编号已存在", status_code=409)
 
     lab = Lab(**request.model_dump())
     try:
         db.add(lab)
-        db.commit()
+        await db.commit()
     except IntegrityError as error:
-        db.rollback()
+        await db.rollback()
         if _is_unique_violation(error):
             raise AppException(
                 code=4008, message="实验室编号已存在", status_code=409
             ) from error
         raise
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise
-    db.refresh(lab)
+    await db.refresh(lab)
     return LabResponse.model_validate(lab)
 
 
-def update_lab(db: Session, lab_id: int, request: LabUpdateRequest) -> LabResponse:
+async def update_lab(
+    db: AsyncSession, lab_id: int, request: LabUpdateRequest
+) -> LabResponse:
     """更新实验室；未提交的字段不变，可空字段显式传 null 表示清空。"""
-    lab = db.get(Lab, lab_id)
+    lab = await db.get(Lab, lab_id)
     if lab is None:
         raise AppException(code=4040, message="实验室不存在", status_code=404)
 
@@ -111,33 +122,37 @@ def update_lab(db: Session, lab_id: int, request: LabUpdateRequest) -> LabRespon
         return LabResponse.model_validate(lab)
 
     lab_code = updates.get("lab_code")
-    if lab_code is not None and db.scalar(
-        select(Lab.id).where(Lab.lab_code == lab_code, Lab.id != lab_id)
-    ) is not None:
+    if (
+        lab_code is not None
+        and await db.scalar(
+            select(Lab.id).where(Lab.lab_code == lab_code, Lab.id != lab_id)
+        )
+        is not None
+    ):
         raise AppException(code=4008, message="实验室编号已存在", status_code=409)
 
     try:
         for field, value in updates.items():
             setattr(lab, field, value)
-        db.commit()
+        await db.commit()
     except IntegrityError as error:
-        db.rollback()
+        await db.rollback()
         if _is_unique_violation(error):
             raise AppException(
                 code=4008, message="实验室编号已存在", status_code=409
             ) from error
         raise
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise
-    db.refresh(lab)
+    await db.refresh(lab)
     return LabResponse.model_validate(lab)
 
 
-def delete_lab(db: Session, lab_id: int) -> None:
+async def delete_lab(db: AsyncSession, lab_id: int) -> None:
     """只允许删除关闭且未关联设备的实验室。"""
     try:
-        lab = db.get(Lab, lab_id)
+        lab = await db.get(Lab, lab_id)
         if lab is None:
             raise AppException(code=4040, message="实验室不存在", status_code=404)
         if lab.status != 0:
@@ -146,14 +161,17 @@ def delete_lab(db: Session, lab_id: int) -> None:
                 message="只有关闭状态的实验室才允许删除",
                 status_code=400,
             )
-        if db.scalar(select(Equipment.id).where(Equipment.lab_id == lab_id)) is not None:
+        if (
+            await db.scalar(select(Equipment.id).where(Equipment.lab_id == lab_id))
+            is not None
+        ):
             raise AppException(
                 code=4004,
                 message="实验室仍关联设备，无法删除",
                 status_code=400,
             )
-        db.execute(delete(Lab).where(Lab.id == lab_id))
-        db.commit()
+        await db.execute(delete(Lab).where(Lab.id == lab_id))
+        await db.commit()
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise

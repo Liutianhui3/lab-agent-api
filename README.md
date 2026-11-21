@@ -23,7 +23,7 @@ cp .env.example .env
 编辑 `.env`，填入本地 MySQL 连接地址和 JWT 密钥。例如：
 
 ```dotenv
-DATABASE_URL=mysql+pymysql://root:your_password@127.0.0.1:3306/lab_agent
+DATABASE_URL=mysql+aiomysql://root:your_password@127.0.0.1:3306/lab_agent
 SECRET_KEY=替换为随机生成的长密钥
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 ALGORITHM=HS256
@@ -43,14 +43,14 @@ docker compose up -d redis
 应用已有的 Alembic 迁移：
 
 ```bash
-uv run alembic upgrade head
+uv run python -m alembic upgrade head
 ```
 
 生成新迁移时，先修改 SQLAlchemy 模型，再执行：
 
 ```bash
-uv run alembic revision --autogenerate -m "describe_change"
-uv run alembic upgrade head
+uv run python -m alembic revision --autogenerate -m "describe_change"
+uv run python -m alembic upgrade head
 ```
 
 生成的迁移需要检查后再提交。
@@ -90,7 +90,7 @@ uv run python -m uvicorn main:app --app-dir src --reload
 | `DELETE` | `/api/v1/lab/{lab_id}` | 删除已关闭的实验室（管理员） |
 | `POST` | `/api/v1/files/upload` | 上传文件或头像（multipart/form-data） |
 
-上传接口接收 `file` 文件字段，可选 `purpose` 字段为 `file` 或 `avatar`。上传后的文件通过 `/uploads/...` 路径访问。
+上传接口接收 `file` 文件字段，可选 `purpose` 字段为 `file` 或 `avatar`。上传后的文件保存在后端项目根目录的 `uploads/` 中，通过 `/uploads/...` 路径访问；该目录不纳入 Git。
 
 ### 实验室管理
 
@@ -121,10 +121,74 @@ PYTHONPATH=src uv run python -m unittest discover -s tests -v
 
 | 变量 | 必填 | 默认值/示例 | 说明 |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | 是 | `mysql+pymysql://...` | SQLAlchemy 数据库连接 URL |
+| `DATABASE_URL` | 是 | `mysql+aiomysql://...` | SQLAlchemy 数据库连接 URL |
 | `SECRET_KEY` | 是 | 无 | JWT 签名密钥 |
 | `ALGORITHM` | 否 | `HS256` | JWT 签名算法 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | 否 | `1440` | 访问令牌有效期（分钟） |
 | `redis_url` | 否 | `redis://127.0.0.1:6380/0` | Redis 连接 URL |
 
 配置通过 `src/core/config.py` 中的 Pydantic Settings 加载。配置字段名区分大小写；Redis 字段当前为小写 `redis_url`。
+
+## AI 聊天接口
+
+`POST /api/v1/chat`，请求头携带 `Authorization: Bearer <token>`。
+
+```json
+{"content": "你好，请介绍一下实验室预约流程"}
+```
+
+首次请求省略 `conversation_id`，服务自动创建会话，以消息前 200 个字符作为标题。
+继续对话时传入返回的 `data.conversation_id`：
+
+```json
+{"conversation_id": "替换为返回的会话 UUID", "content": "需要提前多久预约？"}
+```
+
+响应遵循 `BaseResponse`，`data` 包含 `conversation_id`、`user_message` 和
+`assistant_message`；两条消息均含 ID、角色、内容和创建时间。
+接口为非流式响应，加载该会话全部历史文本作为上下文。纯空白或超过 20000
+字符的输入返回 422；会话不存在或不属于当前用户返回 404；模型异常或空回复返回
+502，且不保存本轮消息及新建会话。模型连接使用 `LLM_*` 配置。
+
+同一已有会话通过数据库行锁串行处理；等待模型期间会占用数据库连接和行锁，
+高并发或超长会话场景后续应增加队列及上下文裁剪。SQLite 不提供同等行锁保证。
+
+### 流式聊天（SSE）
+
+`POST /api/v1/chat/stream` 使用相同的 Bearer Token 和 `ChatRequest` 请求体。
+模型层通过 `llm.astream()` 实时读取文本，API 返回 `text/event-stream`：
+
+```text
+event: start
+data: {"conversation_id":"会话 UUID"}
+
+event: delta
+data: {"content":"你好"}
+
+event: delta
+data: {"content":"，有什么可以帮你？"}
+
+event: done
+data: {"conversation_id":"会话 UUID","user_message":{},"assistant_message":{}}
+
+```
+
+上面的 done 消息对象为简写；实际返回与普通聊天相同的完整消息字段。
+`start` 表示开始生成，其会话 ID 尚未持久化；`delta.content` 是增量文本，
+前端应依次拼接。只有 `done` 表示完整回复已保存。
+失败时发送 `event: error`，数据为 `{"code":5020,"message":"聊天未完成，请稍后重试"}`，
+不保存本轮问答；前端应将已显示的部分回复标为未完成。
+HTTP 响应头发送前的鉴权、参数和会话权限错误仍使用普通 HTTP 错误响应；
+流启动后的错误使用 SSE error 事件。客户端应将未收到 done 的连接结束视为未完成。
+客户端中途断开会关闭模型流并回滚未提交数据；若断开发生在事务提交之后，
+已提交的消息仍保留，可通过历史查询确认。
+
+```bash
+curl -N -X POST http://localhost:8000/api/v1/chat/stream \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"介绍一下实验室预约流程"}'
+```
+
+浏览器请使用 `fetch` 的 POST 请求并增量读取响应；原生 `EventSource` 不支持该 POST 请求。
+解析 SSE 时需要缓存网络分片，按空行拆分事件，不能假设一次读取就是一个完整事件。

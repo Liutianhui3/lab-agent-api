@@ -3,7 +3,7 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-BASE_DIR = Path(__file__).resolve().parent.parent  # 项目根目录
+BASE_DIR = Path(__file__).resolve().parents[2]  # 后端项目根目录，不依赖启动位置
 
 
 class Settings(BaseSettings):

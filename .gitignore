@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .vscode
+.idea
 .ruff_cache/
 .pytest_cache/
 .env
@@ -16,4 +17,4 @@ wheels/
 !.env.example
 
 # Runtime uploads are local data and should not be committed.
-src/uploads/*
+/uploads/

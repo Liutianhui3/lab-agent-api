@@ -2,18 +2,23 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from core.exceptions import AppException
 from models.equipment import Equipment
 from models.lab import Lab
 from models.reservation import Reservation
 from models.user import User
-from schemas.reservation import ReservationCreateRequest, ReservationPageData, ReservationResponse
+from schemas.reservation import (
+    ReservationCreateRequest,
+    ReservationPageData,
+    ReservationResponse,
+)
 
 
-def get_reservation_page(
-    db: Session, current_user: User, page: int, size: int, status: int | None = None
+async def get_reservation_page(
+    db: AsyncSession, current_user: User, page: int, size: int, status: int | None = None
 ) -> ReservationPageData[ReservationResponse]:
     """分页查询预约；管理员查看全部，普通用户仅查看自己的预约。"""
     base = select(Reservation)
@@ -25,17 +30,25 @@ def get_reservation_page(
         base = base.where(Reservation.status == status)
         count_base = count_base.where(Reservation.status == status)
 
-    total = db.scalar(count_base) or 0
+    total = await db.scalar(count_base) or 0
     stats_query = select(Reservation.status, func.count()).group_by(Reservation.status)
     if current_user.role != "admin":
         stats_query = stats_query.where(Reservation.user_id == current_user.id)
-    stats = {row[0]: row[1] for row in db.execute(stats_query)}
-    reservations = db.scalars(
-        base.options(joinedload(Reservation.user), joinedload(Reservation.lab), joinedload(Reservation.equipment))
-        .order_by(Reservation.date.desc(), Reservation.start_time.desc(), Reservation.id.desc())
+    stats = {row[0]: row[1] for row in await db.execute(stats_query)}
+    reservations = (await db.scalars(
+        base.options(
+            joinedload(Reservation.user),
+            joinedload(Reservation.lab),
+            joinedload(Reservation.equipment),
+        )
+        .order_by(
+            Reservation.date.desc(),
+            Reservation.start_time.desc(),
+            Reservation.id.desc(),
+        )
         .offset((page - 1) * size)
         .limit(size)
-    ).all()
+    )).all()
     return ReservationPageData(
         total=total,
         items=[ReservationResponse.model_validate(item) for item in reservations],
@@ -48,20 +61,28 @@ def get_reservation_page(
     )
 
 
-def update_reservation_status(db: Session, current_user: User, reservation_id: int, target_status: int) -> ReservationResponse:
-    reservation = db.get(Reservation, reservation_id)
+async def update_reservation_status(
+    db: AsyncSession, current_user: User, reservation_id: int, target_status: int
+) -> ReservationResponse:
+    reservation = await db.get(Reservation, reservation_id)
     if reservation is None:
         raise AppException(code=4040, message="预约不存在", status_code=404)
     if target_status == 3:
         if reservation.user_id != current_user.id:
             raise AppException(code=4030, message="只能取消自己的预约", status_code=403)
         if reservation.status not in (0, 1):
-            raise AppException(code=4000, message="当前预约状态不可取消", status_code=400)
+            raise AppException(
+                code=4000, message="当前预约状态不可取消", status_code=400
+            )
     elif target_status in (1, 2):
         if current_user.role != "admin":
-            raise AppException(code=4030, message="只有管理员可以审核预约", status_code=403)
+            raise AppException(
+                code=4030, message="只有管理员可以审核预约", status_code=403
+            )
         if reservation.status != 0:
-            raise AppException(code=4000, message="只有待审核预约可以审核", status_code=400)
+            raise AppException(
+                code=4000, message="只有待审核预约可以审核", status_code=400
+            )
     else:
         raise AppException(code=4000, message="无效的预约状态", status_code=400)
     if target_status == 1:
@@ -76,7 +97,7 @@ def update_reservation_status(db: Session, current_user: User, reservation_id: i
                 Reservation.equipment_id.is_(None),
                 Reservation.equipment_id == reservation.equipment_id,
             )
-        conflict = db.scalar(
+        conflict = await db.scalar(
             select(Reservation.id)
             .where(
                 Reservation.id != reservation.id,
@@ -95,17 +116,17 @@ def update_reservation_status(db: Session, current_user: User, reservation_id: i
             )
     try:
         reservation.status = target_status
-        db.commit()
+        await db.commit()
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise
-    db.refresh(reservation)
-    db.refresh(reservation, attribute_names=["user", "lab", "equipment"])
+    await db.refresh(reservation)
+    await db.refresh(reservation, attribute_names=["user", "lab", "equipment"])
     return ReservationResponse.model_validate(reservation)
 
 
-def create_reservation(
-    db: Session, current_user: User, request: ReservationCreateRequest
+async def create_reservation(
+    db: AsyncSession, current_user: User, request: ReservationCreateRequest
 ) -> Reservation:
     """创建待审核预约；以实验室行锁串行化同实验室的预约检查和写入。
 
@@ -129,7 +150,7 @@ def create_reservation(
                 code=4000, message="预约日期不能早于当前日期", status_code=400
             )
 
-        lab = db.scalar(
+        lab = await db.scalar(
             select(Lab)
             .where(Lab.id == request.lab_id)
             .with_for_update()
@@ -138,7 +159,9 @@ def create_reservation(
         if lab is None:
             raise AppException(code=4040, message="实验室不存在", status_code=404)
         if lab.status != 1:
-            raise AppException(code=4003, message="实验室未开放，无法预约", status_code=400)
+            raise AppException(
+                code=4003, message="实验室未开放，无法预约", status_code=400
+            )
         if lab.open_time is not None and request.start_time < lab.open_time:
             raise AppException(
                 code=4000, message="预约开始时间早于实验室开放时间", status_code=400
@@ -149,7 +172,7 @@ def create_reservation(
             )
 
         if request.equipment_id is not None:
-            equipment = db.scalar(
+            equipment = await db.scalar(
                 select(Equipment)
                 .where(Equipment.id == request.equipment_id)
                 .with_for_update()
@@ -187,7 +210,7 @@ def create_reservation(
                 )
             )
         # 锁定读读取最新已提交记录，避免 MySQL 可重复读快照漏掉并发预约。
-        if db.scalar(conflict_query.limit(1).with_for_update()) is not None:
+        if await db.scalar(conflict_query.limit(1).with_for_update()) is not None:
             raise AppException(
                 code=4008, message="所选时段已被预约，请选择其他时段", status_code=409
             )
@@ -196,12 +219,12 @@ def create_reservation(
             user_id=current_user.id, status=0, **request.model_dump()
         )
         db.add(reservation)
-        db.commit()
+        await db.commit()
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise
-    db.refresh(reservation)
-    db.refresh(
+    await db.refresh(reservation)
+    await db.refresh(
         reservation,
         attribute_names=["user", "lab", "equipment"],
     )
