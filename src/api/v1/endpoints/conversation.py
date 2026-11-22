@@ -13,7 +13,7 @@ from schemas.conversation import (
 )
 from schemas.response import BaseResponse
 from services import conversation_service, message_service
-from schemas.message import MessagePageData, MessageResponse
+from schemas.message import MessageFeedbackUpdate, MessagePageData, MessageResponse
 
 router = APIRouter(prefix="/conversations", tags=["ai会话"])
 
@@ -97,4 +97,15 @@ async def get_conversation_messages(
 ) -> BaseResponse[MessagePageData[MessageResponse]]:
     """校验当前用户的会话归属，按时间正序返回消息。"""
     data = await message_service.get_messages(db, conversation_id, current_user.id, page, size)
+    return BaseResponse.success(data=data)
+
+@router.put("/{conversation_id}/messages/{message_id}/feedback", response_model=BaseResponse[MessageFeedbackUpdate])
+async def set_message_feedback(
+    conversation_id: UUID,
+    message_id: UUID,
+    data: MessageFeedbackUpdate,
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db, scope="function")],
+) -> BaseResponse[MessageFeedbackUpdate]:
+    await message_service.set_message_feedback(db, conversation_id, message_id, current_user.id, data.feedback)
     return BaseResponse.success(data=data)

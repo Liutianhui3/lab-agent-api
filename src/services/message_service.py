@@ -6,7 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import NotFoundException
 from models.message import Message
-from schemas.message import MessageCreate, MessagePageData, MessageResponse
+from schemas.message import (
+    MessageCreate,
+    MessageFeedback,
+    MessagePageData,
+    MessageResponse,
+)
 from services.conversation_service import get_conversation_detail
 
 
@@ -121,3 +126,26 @@ async def delete_message(
         raise
 
     return True
+
+
+async def set_message_feedback(
+    db: AsyncSession,
+    conversation_id: UUID,
+    message_id: UUID,
+    user_id: UUID,
+    feedback: MessageFeedback | None,
+) -> None:
+    await _require_conversation(db, conversation_id, user_id)
+    message = await db.scalar(
+        select(Message)
+        .where(
+            Message.id == message_id,
+            Message.conversation_id == conversation_id,
+            Message.role == "assistant",
+        )
+        .with_for_update()
+    )
+    if message is None:
+        raise NotFoundException(message="回复不存在")
+    message.feedback = feedback
+    await db.commit()

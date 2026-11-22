@@ -28,6 +28,8 @@ async def get_equipment_page(
     keyword: str | None = None,
     lab_id: int | None = None,
     status: int | None = None,
+    *,
+    lab_status: int | None = None,
 ) -> EquipmentPageData[EquipmentResponse]:
     """分页查询设备，并返回不受筛选条件影响的全局统计。"""
     query = select(Equipment)
@@ -40,28 +42,48 @@ async def get_equipment_page(
         query = query.where(Equipment.status == status)
         count_query = count_query.where(Equipment.status == status)
 
+    if lab_status is not None:
+        query = query.join(Lab, Equipment.lab_id == Lab.id).where(
+            Lab.status == lab_status
+        )
+        count_query = count_query.join(Lab, Equipment.lab_id == Lab.id).where(
+            Lab.status == lab_status
+        )
+
     search = keyword.strip() if keyword else ""
     if search:
-        pattern = f"%{search}%"
-        conditions = or_(Equipment.code.ilike(pattern), Equipment.name.ilike(pattern))
+        conditions = or_(
+            Equipment.code.icontains(search, autoescape=True),
+            Equipment.name.icontains(search, autoescape=True),
+        )
         query = query.where(conditions)
         count_query = count_query.where(conditions)
 
     total = await db.scalar(count_query) or 0
     global_total = await db.scalar(select(func.count()).select_from(Equipment)) or 0
-    normal_count = await db.scalar(
-        select(func.count()).select_from(Equipment).where(Equipment.status == 1)
-    ) or 0
-    maintenance_count = await db.scalar(
-        select(func.count()).select_from(Equipment).where(Equipment.status == 0)
-    ) or 0
-    total_quantity = await db.scalar(select(func.coalesce(func.sum(Equipment.quantity), 0))) or 0
+    normal_count = (
+        await db.scalar(
+            select(func.count()).select_from(Equipment).where(Equipment.status == 1)
+        )
+        or 0
+    )
+    maintenance_count = (
+        await db.scalar(
+            select(func.count()).select_from(Equipment).where(Equipment.status == 0)
+        )
+        or 0
+    )
+    total_quantity = (
+        await db.scalar(select(func.coalesce(func.sum(Equipment.quantity), 0))) or 0
+    )
 
-    equipments = (await db.scalars(
-        query.order_by(Equipment.created_at.desc(), Equipment.id)
-        .offset((page - 1) * size)
-        .limit(size)
-    )).all()
+    equipments = (
+        await db.scalars(
+            query.order_by(Equipment.created_at.desc(), Equipment.id)
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+    ).all()
     return EquipmentPageData(
         total=total,
         items=[EquipmentResponse.model_validate(item) for item in equipments],
@@ -74,11 +96,16 @@ async def get_equipment_page(
     )
 
 
-async def create_equipment(db: AsyncSession, request: EquipmentCreateRequest) -> EquipmentResponse:
+async def create_equipment(
+    db: AsyncSession, request: EquipmentCreateRequest
+) -> EquipmentResponse:
     """创建设备。"""
     if await db.get(Lab, request.lab_id) is None:
         raise AppException(code=4040, message="所属实验室不存在", status_code=404)
-    if await db.scalar(select(Equipment.id).where(Equipment.code == request.code)) is not None:
+    if (
+        await db.scalar(select(Equipment.id).where(Equipment.code == request.code))
+        is not None
+    ):
         raise AppException(code=4008, message="设备编号已存在", status_code=409)
 
     equipment = Equipment(**request.model_dump())
@@ -88,7 +115,9 @@ async def create_equipment(db: AsyncSession, request: EquipmentCreateRequest) ->
     except IntegrityError as error:
         await db.rollback()
         if _is_unique_violation(error):
-            raise AppException(code=4008, message="设备编号已存在", status_code=409) from error
+            raise AppException(
+                code=4008, message="设备编号已存在", status_code=409
+            ) from error
         raise
     except Exception:
         await db.rollback()
@@ -113,9 +142,15 @@ async def update_equipment(
     if lab_id is not None and await db.get(Lab, lab_id) is None:
         raise AppException(code=4040, message="所属实验室不存在", status_code=404)
     code = updates.get("code")
-    if code is not None and await db.scalar(
-        select(Equipment.id).where(Equipment.code == code, Equipment.id != equipment_id)
-    ) is not None:
+    if (
+        code is not None
+        and await db.scalar(
+            select(Equipment.id).where(
+                Equipment.code == code, Equipment.id != equipment_id
+            )
+        )
+        is not None
+    ):
         raise AppException(code=4008, message="设备编号已存在", status_code=409)
 
     try:
@@ -125,7 +160,9 @@ async def update_equipment(
     except IntegrityError as error:
         await db.rollback()
         if _is_unique_violation(error):
-            raise AppException(code=4008, message="设备编号已存在", status_code=409) from error
+            raise AppException(
+                code=4008, message="设备编号已存在", status_code=409
+            ) from error
         raise
     except Exception:
         await db.rollback()

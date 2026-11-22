@@ -7,6 +7,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from schemas.response import BaseResponse, PageData
 
 
+MessageFeedback = Literal["positive", "negative"]
+
+
+class MessageFeedbackUpdate(BaseModel):
+    feedback: MessageFeedback | None
+
+
 # 用户发送消息的请求
 class MessageCreate(BaseModel):
     content: str = Field(
@@ -22,6 +29,7 @@ class MessageResponse(BaseModel):
     role: Literal["user", "assistant", "system", "tool"]
     content: str
     created_at: datetime
+    feedback: MessageFeedback | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -20,7 +20,9 @@ from services.llm import llm_service
 logger = logging.getLogger(__name__)
 
 
-async def chat(db: AsyncSession, data: ChatRequest, user_id: UUID) -> ChatResponse:
+async def chat(
+    db: AsyncSession, data: ChatRequest, user_id: UUID, role: str | None = None
+) -> ChatResponse:
     """完成一轮非流式聊天；仅在模型成功回复后提交会话及本轮两条消息。
 
     已有会话加行锁，避免同一会话的并发请求读取相同的旧上下文。
@@ -30,7 +32,10 @@ async def chat(db: AsyncSession, data: ChatRequest, user_id: UUID) -> ChatRespon
         conversation, messages = await _prepare_chat(db, data, user_id)
 
         try:
-            reply = await llm_service.chat(messages)
+            model_kwargs = {"enable_thinking": data.enable_thinking}
+            if role is not None:
+                model_kwargs.update(db=db, user_role=role, user_id=user_id)
+            reply = await llm_service.chat(messages, **model_kwargs)
             if not isinstance(reply, str) or not reply.strip():
                 raise ValueError("模型返回了空内容或非文本内容")
         except Exception as exc:
@@ -118,7 +123,7 @@ async def _save_turn(
 
 # SSE 流式聊天
 async def prepare_chat_stream(
-    db: AsyncSession, data: ChatRequest, user_id: UUID
+    db: AsyncSession, data: ChatRequest, user_id: UUID, role: str | None = None
 ) -> AsyncIterator[tuple[str, dict]]:
     """在发送响应头前检查权限；返回按需消费的流，事务持续至生成完成。"""
     try:
@@ -126,7 +131,7 @@ async def prepare_chat_stream(
     except BaseException:
         await db.rollback()
         raise
-    return _stream_turn(db, conversation, messages, data, user_id)
+    return _stream_turn(db, conversation, messages, data, user_id, role)
 
 
 # 执行流式聊天
@@ -136,13 +141,17 @@ async def _stream_turn(
     messages: list[BaseMessage],
     data: ChatRequest,
     user_id: UUID,
+    role: str | None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """逐段输出，完整生成并提交后才发送 done；中断不保存半条回复。"""
     committed = False
     try:
         yield "start", {"conversation_id": str(conversation.id)}
         parts: list[str] = []
-        async with aclosing(llm_service.stream_chat(messages)) as stream:
+        stream_kwargs = {"enable_thinking": data.enable_thinking}
+        if role is not None:
+            stream_kwargs.update(db=db, user_role=role, user_id=user_id)
+        async with aclosing(llm_service.stream_chat(messages, **stream_kwargs)) as stream:
             async for content in stream:
                 parts.append(content)
                 yield "delta", {"content": content}
@@ -154,7 +163,7 @@ async def _stream_turn(
         committed = True
         yield "done", result.model_dump(mode="json")
     except Exception as exc:
-        logger.warning("流式聊天失败：%s", type(exc).__name__)
+        logger.exception("流式聊天失败：%s", type(exc).__name__)
         # 流启动后不能更改 HTTP 状态码，使用事件传达失败，不暴露上游详情。
         yield "error", {"code": 5020, "message": "聊天未完成，请稍后重试"}
     finally:

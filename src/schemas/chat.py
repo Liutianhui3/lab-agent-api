@@ -13,6 +13,8 @@ class ChatRequest(BaseModel):
     conversation_id: UUID | None = Field(default=None, description="已有会话 ID")
     content: str = Field(min_length=1, max_length=20000, description="用户输入的消息内容")
 
+    enable_thinking: bool = Field(default=False, strict=True, description="是否启用模型思考")
+
     @field_validator("content")
     @classmethod
     def validate_content(cls, value: str) -> str:

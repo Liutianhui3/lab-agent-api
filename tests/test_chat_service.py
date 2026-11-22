@@ -14,8 +14,10 @@ from core.exceptions import AppException, NotFoundException
 from models.conversation import Conversation
 from models.message import Message
 from models.user import User
+from schemas.agent import RouteDecision
 from schemas.chat import ChatRequest
 from services.chat_service import chat, prepare_chat_stream
+from services.llm import llm_service
 
 
 class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -28,6 +30,7 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.db.add(user)
         await self.db.commit()
         self.user_id = user.id
+        self.original_chat = llm_service.chat
         self.model_patch = patch("services.chat_service.llm_service.chat", new_callable=AsyncMock)
         self.model = self.model_patch.start()
         self.model.return_value = "你好"
@@ -36,6 +39,62 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.model_patch.stop()
         await self.db.close()
         await self.engine.dispose()
+
+    async def test_profile_workflow_reads_only_authenticated_account_in_chat_and_stream(self):
+        owner = await self.db.get(User, self.user_id)
+        owner.email = "self@example.com"
+        self.db.add(User(
+            username="other", password="hash", name="其他用户",
+            email="other@example.com", role="admin",
+        ))
+        await self.db.commit()
+        self.model.side_effect = self.original_chat
+
+        with patch.object(llm_service, "classify_request", side_effect=[
+            RouteDecision(intent="user_profile_query", route_reason="本人邮箱和角色", profile_fields=["email", "role"]),
+            RouteDecision(intent="user_profile_query", route_reason="追问本人手机号", profile_fields=["phone"]),
+        ]):
+            reply = await chat(
+                self.db, ChatRequest(content="我的邮箱和角色是什么？"), self.user_id, role="student",
+            )
+            stream = await prepare_chat_stream(
+                self.db, ChatRequest(conversation_id=reply.conversation_id, content="那我的手机号呢？"),
+                self.user_id, role="student",
+            )
+            events = [(event, payload) async for event, payload in stream]
+
+        self.assertEqual(reply.assistant_message.content, "- 邮箱：self@example.com\n- 角色：学生")
+        self.assertEqual([event for event, _ in events], ["start", "delta", "done"])
+        self.assertEqual(events[1][1]["content"], "你的手机号：未填写。")
+
+    async def test_reply_feedback_persists_and_requires_owned_assistant_message(self):
+        from httpx import ASGITransport, AsyncClient
+        from api.deps import get_current_user
+        from core.database import get_db
+        from main import app
+
+        turn = await chat(self.db, ChatRequest(content="你好"), self.user_id)
+        owner = await self.db.get(User, self.user_id)
+        other = User(username="feedback-other", password="hash", name="其他用户")
+        self.db.add(other)
+        await self.db.commit()
+        app.dependency_overrides[get_current_user] = lambda: owner
+        app.dependency_overrides[get_db] = lambda: self.db
+        self.addCleanup(app.dependency_overrides.clear)
+
+        messages_url = f"/api/v1/conversations/{turn.conversation_id}/messages"
+        reply_url = f"{messages_url}/{turn.assistant_message.id}/feedback"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for rating in ("positive", "negative", None):
+                response = await client.put(reply_url, json={"feedback": rating})
+                self.assertEqual(response.status_code, 200)
+                history = await client.get(messages_url)
+                self.assertEqual(history.json()["data"]["items"][1]["feedback"], rating)
+
+            prompt_url = f"{messages_url}/{turn.user_message.id}/feedback"
+            self.assertEqual((await client.put(prompt_url, json={"feedback": "positive"})).status_code, 404)
+            app.dependency_overrides[get_current_user] = lambda: other
+            self.assertEqual((await client.put(reply_url, json={"feedback": "positive"})).status_code, 404)
 
     async def test_create_and_continue_with_history(self):
         first = await chat(self.db, ChatRequest(content="第一问"), self.user_id)
@@ -89,7 +148,7 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.db.scalar(select(func.count()).select_from(Message)), 0)
 
     async def test_stream_success_saves_complete_reply(self):
-        async def chunks(messages):
+        async def chunks(messages, *, enable_thinking=False):
             yield "你"
             yield "好\n世界"
 
@@ -101,7 +160,7 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.db.scalar(select(func.count()).select_from(Message)), 2)
 
     async def test_stream_failure_rolls_back(self):
-        async def chunks(messages):
+        async def chunks(messages, *, enable_thinking=False):
             yield "部分回复"
             raise TimeoutError("模型断流")
 
@@ -115,7 +174,7 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_disconnect_closes_model_and_rolls_back(self):
         closed = []
 
-        async def chunks(messages):
+        async def chunks(messages, *, enable_thinking=False):
             try:
                 yield "部分回复"
                 yield "剩余回复"
@@ -153,10 +212,12 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         from main import app
         from types import SimpleNamespace
 
-        async def chunks(messages):
+        async def chunks(messages, *, enable_thinking=False, db=None, user_role="student", user_id=None):
             yield "你好\n世界"
 
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=self.user_id)
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=self.user_id, role="student"
+        )
 
         async def database():
             yield self.db

@@ -24,7 +24,9 @@ async def chat(
     db: Annotated[AsyncSession, Depends(get_db, scope="function")],
 ) -> BaseResponse[ChatResponse]:
     """需登录；不传 conversation_id 创建新会话，传入则携带历史继续聊天。"""
-    result = await chat_service.chat(db=db, data=data, user_id=current_user.id)
+    result = await chat_service.chat(
+        db=db, data=data, user_id=current_user.id, role=current_user.role
+    )
     return BaseResponse[ChatResponse].success(data=result)
 
 
@@ -38,7 +40,9 @@ async def chat_stream(
     db: Annotated[AsyncSession, Depends(get_db, scope="request")],
 ) -> StreamingResponse:
     """通过 start、delta、done、error 事件返回结果；数据库会话覆盖整个响应。"""
-    events = await chat_service.prepare_chat_stream(db, data, current_user.id)
+    events = await chat_service.prepare_chat_stream(
+        db, data, current_user.id, role=getattr(current_user, "role", "student")
+    )
 
     async def event_body():
         # 连接中断时关闭业务生成器，使其释放上游模型流及未提交事务。

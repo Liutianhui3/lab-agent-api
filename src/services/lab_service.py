@@ -16,6 +16,27 @@ def _is_unique_violation(error: IntegrityError) -> bool:
     )
 
 
+def _lab_filters(keyword: str | None, status: int | None) -> list:
+    filters = []
+    if status is not None:
+        filters.append(Lab.status == status)
+    search = keyword.strip() if keyword else ""
+    if search:
+        filters.append(or_(
+            Lab.lab_code.icontains(search, autoescape=True),
+            Lab.name.icontains(search, autoescape=True),
+            Lab.location.icontains(search, autoescape=True),
+        ))
+    return filters
+
+
+async def get_all_labs(
+    db: AsyncSession, *, keyword: str | None = None, status: int | None = None,
+) -> list[LabResponse]:
+    labs = await db.scalars(select(Lab).where(*_lab_filters(keyword, status)).order_by(Lab.lab_code))
+    return [LabResponse.model_validate(lab) for lab in labs]
+
+
 async def get_lab_page(
     db: AsyncSession,
     page: int,
@@ -24,23 +45,9 @@ async def get_lab_page(
     status: int | None = None,
 ) -> LabPageData[LabResponse]:
     """分页查询实验室，并返回全局状态和容量统计。"""
-    query = select(Lab)
-    count_query = select(func.count()).select_from(Lab)
-
-    if status is not None:
-        query = query.where(Lab.status == status)
-        count_query = count_query.where(Lab.status == status)
-
-    search = keyword.strip() if keyword else ""
-    if search:
-        pattern = f"%{search}%"
-        conditions = or_(
-            Lab.lab_code.ilike(pattern),
-            Lab.name.ilike(pattern),
-            Lab.location.ilike(pattern),
-        )
-        query = query.where(conditions)
-        count_query = count_query.where(conditions)
+    filters = _lab_filters(keyword, status)
+    query = select(Lab).where(*filters)
+    count_query = select(func.count()).select_from(Lab).where(*filters)
 
     total = await db.scalar(count_query) or 0
     global_total = await db.scalar(select(func.count()).select_from(Lab)) or 0
