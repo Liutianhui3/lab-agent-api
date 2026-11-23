@@ -30,6 +30,8 @@ class MessageResponse(BaseModel):
     content: str
     created_at: datetime
     feedback: MessageFeedback | None = None
+    thinking_steps: list[dict] | None = None
+    thinking_duration: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -64,8 +64,9 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
             events = [(event, payload) async for event, payload in stream]
 
         self.assertEqual(reply.assistant_message.content, "- 邮箱：self@example.com\n- 角色：学生")
-        self.assertEqual([event for event, _ in events], ["start", "delta", "done"])
-        self.assertEqual(events[1][1]["content"], "你的手机号：未填写。")
+        self.assertEqual([event for event, _ in events if event != "thinking"], ["start", "delta", "done"])
+        self.assertTrue(any(event == "thinking" for event, _ in events))
+        self.assertEqual(next(payload["content"] for event, payload in events if event == "delta"), "你的手机号：未填写。")
 
     async def test_reply_feedback_persists_and_requires_owned_assistant_message(self):
         from httpx import ASGITransport, AsyncClient
@@ -155,7 +156,8 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch("services.chat_service.llm_service.stream_chat", chunks):
             stream = await prepare_chat_stream(self.db, ChatRequest(content="问候"), self.user_id)
             events = [event async for event in stream]
-        self.assertEqual([name for name, _ in events], ["start", "delta", "delta", "done"])
+        self.assertEqual([name for name, _ in events if name != "thinking"], ["start", "delta", "delta", "done"])
+        self.assertTrue(any(name == "thinking" for name, _ in events))
         self.assertEqual(events[-1][1]["assistant_message"]["content"], "你好\n世界")
         self.assertEqual(await self.db.scalar(select(func.count()).select_from(Message)), 2)
 
@@ -167,7 +169,7 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch("services.chat_service.llm_service.stream_chat", chunks):
             stream = await prepare_chat_stream(self.db, ChatRequest(content="失败"), self.user_id)
             events = [event async for event in stream]
-        self.assertEqual([name for name, _ in events], ["start", "delta", "error"])
+        self.assertEqual([name for name, _ in events if name != "thinking"], ["start", "delta", "error"])
         self.assertEqual(await self.db.scalar(select(func.count()).select_from(Conversation)), 0)
         self.assertEqual(await self.db.scalar(select(func.count()).select_from(Message)), 0)
 
@@ -184,7 +186,10 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch("services.chat_service.llm_service.stream_chat", chunks):
             stream = await prepare_chat_stream(self.db, ChatRequest(content="中断"), self.user_id)
             await anext(stream)
-            await anext(stream)
+            while True:
+                event, payload = await anext(stream)
+                if event == "delta":
+                    break
             await stream.aclose()
         self.assertEqual(closed, [True])
         self.assertEqual(await self.db.scalar(select(func.count()).select_from(Conversation)), 0)
@@ -199,7 +204,7 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.model_patch.stop()
         from services.llm import llm_service
 
-        with patch("services.agent.workflow.run", new_callable=AsyncMock) as run:
+        with patch("services.workflows.supervisor.workflow.run", new_callable=AsyncMock) as run:
             run.return_value = "公开回复"
             result = [text async for text in llm_service.stream_chat([HumanMessage(content="问题")])]
         self.assertEqual(result, ["公开回复"])

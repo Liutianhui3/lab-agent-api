@@ -1,5 +1,6 @@
 """UserWorkflow：查询当前登录用户的账户资料。"""
 
+import json
 from collections.abc import Sequence
 from typing import Literal
 from uuid import UUID
@@ -58,3 +59,21 @@ async def run(
     if output_format == "text" or (output_format is None and len(lines) == 1):
         return "你的" + "，".join(lines) + "。"
     return "\n".join(f"- {line}" for line in lines)
+
+
+async def edit_card(*, db: AsyncSession | None, user_id: UUID | None) -> str:
+    """Build an edit card for the authenticated user's own profile."""
+    if db is None or user_id is None:
+        return "暂时无法读取你的账号资料，请登录后再试。"
+    user = await db.get(User, user_id)
+    if user is None:
+        return "没有找到当前账号的资料，请重新登录后再试。"
+    data = {
+        "id": str(user.id),
+        "username": user.username,
+        "name": user.name,
+        "email": user.email,
+        "phone": user.phone,
+        "avatar": user.avatar,
+    }
+    return json.dumps({"type": "user_profile_edit", "data": data}, ensure_ascii=False)

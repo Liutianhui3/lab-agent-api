@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Text, Uuid
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, Text, Uuid
 from sqlalchemy.dialects.mysql import DATETIME, LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,6 +26,8 @@ class Message(TimestampMixin, Base):
     )
 
     feedback: Mapped[str | None] = mapped_column(String(8))
+    thinking_steps: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    thinking_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), primary_key=True, default=uuid4

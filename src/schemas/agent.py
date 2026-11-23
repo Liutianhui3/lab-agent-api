@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Intent = Literal[
-    "knowledge_qa", "resource_query", "user_profile_query", "availability_query", "reservation_query",
+    "knowledge_qa", "resource_query", "user_profile_query", "user_profile_edit", "admin_user_create", "admin_user_edit", "admin_user_delete", "availability_query", "reservation_query",
     "create_reservation", "cancel_reservation", "out_of_scope", "unclear", "greeting",
 ]
 
@@ -32,23 +32,7 @@ class RouteDecision(BaseModel):
         default_factory=list,
         description="仅本人资料查询时填写请求的字段；概览填写全部支持的字段",
     )
+    # 管理员用户管理卡片的目标信息；仅管理员意图使用。
+    user_identifier: str | None = Field(default=None, max_length=254)
+    user_fields: dict[str, str | int | None] = Field(default_factory=dict)
 
-
-
-LabField = Literal["name", "code", "capacity", "opening_hours", "location", "status", "description"]
-
-
-class LaboratoryQuery(BaseModel):
-    """实验室工作流允许的只读查询参数。"""
-
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    target: Literal["laboratory", "equipment", "clarify"]
-    lab_keyword: str | None = Field(default=None, min_length=1, max_length=255)
-    equipment_keyword: str | None = Field(default=None, min_length=1, max_length=255)
-    lab_status: Literal["open", "closed", "all"] | None = None
-    equipment_status: Literal["normal", "maintenance", "all"] | None = None
-    page: int = Field(default=1, ge=1, le=10_000)
-    full_lab_list: bool = Field(default=False, description="列出所有符合条件的实验室，取消分页")
-    output_format: Literal["list", "table"] | None = Field(default=None, description="多字段清单或表格用 table，项目符号列表用 list")
-    lab_fields: list[LabField] = Field(default_factory=list, description="用户要求展示的实验室字段，按原顺序")

@@ -194,22 +194,47 @@ curl -N -X POST http://localhost:8000/api/v1/chat/stream \
 解析 SSE 时需要缓存网络分片，按空行拆分事件，不能假设一次读取就是一个完整事件。
 
 
-### 实验室 Agent（第一阶段）
+### AI 工作流架构
 
-普通聊天和 SSE 聊天均经过 LangGraph：
+普通聊天和 SSE 聊天共用 Supervisor 路由。Supervisor 使用结构化分类结果，根据意图和认证角色分派到对应业务 workflow；分类结果不会直接作为用户回复。
 
 ```text
-START → route_request → respond_out_of_scope → END
-                     ↘ respond_pending      → END
+chat_service
+    └── workflows/supervisor/workflow.py
+          ├── laboratory/workflow.py
+          ├── user/workflow.py
+          ├── admin/workflow.py
+          └── reservation/workflow.py
 ```
 
-- `src/schemas/agent.py`：意图枚举、路由结构化输出。
-- `src/services/agent/workflow.py`：State、范围限制 Prompt、节点与条件边。
-- `src/services/llm/llm_service.py`：模型分类调用及现有聊天入口适配。
-- `route_request` 使用模型的 function calling 结构化输出识别最新请求，并携带历史上下文。
-- 范围外请求区分无关问题、不支持的操作和受限能力，由模型生成简短说明；生成失败、空回复或回复过长时使用对应模板兜底。问候、意图不明、尚未实现的业务请求分别返回明确提示。
-- 本阶段未接入知识检索、业务工具和 checkpoint，不执行预约或取消操作。
-- SSE 事件协议保持不变；分类完成后返回一个公开回复 delta，不输出分类 JSON 或内部分类依据。
-- 分类失败仍走现有聊天错误与回滚流程，不退回无限制聊天。
+工作流代码按业务域组织：
 
-新增测试使用模拟模型验证路由与边界；真实服务商的结构化输出兼容性需配置模型后联调。
+```text
+src/services/workflows/
+├── supervisor/
+│   └── workflow.py             # 总路由、权限分支与子 workflow 调度
+├── laboratory/
+│   ├── workflow.py             # 实验室与设备查询 Agent
+│   ├── agents/                 # 实验室专用 Agent 扩展目录
+│   └── tools/
+│       └── laboratory_tools.py # 实验室和设备只读查询工具
+├── user/
+│   └── workflow.py             # 当前用户资料查询与本人编辑卡片
+├── admin/
+│   └── workflow.py             # 管理员用户操作卡片
+└── reservation/
+    ├── workflow.py             # 预约 workflow 占位
+    ├── agents/
+    └── tools/
+```
+
+- `supervisor/workflow.py` 负责识别用户意图、基于认证角色执行权限分支，并调用对应 workflow。它目前不包含自己的 Agent 或工具目录。
+- `laboratory/workflow.py` 使用 LangChain `create_agent` 处理单项和组合查询。Agent 可多次调用实验室、设备只读工具，并基于工具返回的数据回答；每轮最多调用工具 8 次。工具通过运行时上下文取得数据库会话，不向模型暴露数据库连接。
+- `user/workflow.py` 只读取认证用户自己的资料，并生成本人编辑卡片；实际更新由当前用户资料 API 执行。
+- `admin/workflow.py` 生成管理员新增、编辑、删除用户卡片；实际写入由受管理员权限保护的用户管理 API 执行。
+- `reservation/workflow.py` 当前为结构占位。预约查询、申请和取消尚未接入该 workflow。
+- `src/schemas/agent.py` 定义意图与路由结构化输出；`src/services/llm/llm_service.py` 提供分类调用和聊天入口适配。
+- 范围外请求区分无关问题、不支持的操作和受限能力；问候、意图不明及尚未实现的业务意图走 Supervisor 的对应回复分支。
+- SSE 事件协议保持不变；分类和工具调用的内部数据不会作为公开回复内容发送。分类、Agent 或工具异常由聊天错误与事务回滚流程处理。
+
+工作流测试使用模拟模型验证路由、权限边界和多轮工具调用；真实服务商的工具调用兼容性需配置模型后联调。

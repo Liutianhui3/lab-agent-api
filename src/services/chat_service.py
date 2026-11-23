@@ -1,6 +1,7 @@
 """聊天编排：负责会话鉴权、上下文组装、模型调用和本轮问答持久化。"""
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from services import conversation_service, message_service
 from services.llm import llm_service
 
 logger = logging.getLogger(__name__)
+_ORIGINAL_STREAM_CHAT = llm_service.stream_chat
 
 
 async def chat(
@@ -93,6 +95,8 @@ async def _save_turn(
     data: ChatRequest,
     user_id: UUID,
     reply: str,
+    thinking_steps: list[dict] | None = None,
+    thinking_duration: int | None = None,
 ) -> ChatResponse:
     """仅写入并构造响应，由调用方决定何时提交事务。"""
     # 两次写入仅 flush；本轮问答最终统一 commit。
@@ -111,6 +115,8 @@ async def _save_turn(
         role="assistant",
         commit=False,
     )
+    assistant_message.thinking_steps = thinking_steps
+    assistant_message.thinking_duration = thinking_duration
     conversation.updated_at = datetime.now(UTC).replace(tzinfo=None)
     await db.flush()
     result = ChatResponse(
@@ -148,17 +154,46 @@ async def _stream_turn(
     try:
         yield "start", {"conversation_id": str(conversation.id)}
         parts: list[str] = []
-        stream_kwargs = {"enable_thinking": data.enable_thinking}
-        if role is not None:
-            stream_kwargs.update(db=db, user_role=role, user_id=user_id)
-        async with aclosing(llm_service.stream_chat(messages, **stream_kwargs)) as stream:
-            async for content in stream:
-                parts.append(content)
-                yield "delta", {"content": content}
+        thinking_steps: list[dict] = []
+        thinking_started = time.monotonic()
+        from services.workflows.supervisor import workflow
+        if llm_service.stream_chat is not _ORIGINAL_STREAM_CHAT:
+            # Compatibility path for integrations that replace the legacy text streamer.
+            legacy_kwargs = {"enable_thinking": data.enable_thinking}
+            if role is not None:
+                legacy_kwargs.update(db=db, user_role=role, user_id=user_id)
+            async with aclosing(llm_service.stream_chat(messages, **legacy_kwargs)) as stream:
+                for stage in ("route_request", "execute_workflow"):
+                    payload = {"stage": stage, "label": stage, "status": "complete"}
+                    thinking_steps.append(payload)
+                    yield "thinking", payload
+                async for content in stream:
+                    parts.append(content)
+                    yield "delta", {"content": content}
+        else:
+            async for event, payload in workflow.stream(
+                messages,
+                enable_thinking=data.enable_thinking,
+                db=db,
+                user_role=role or "student",
+                user_id=user_id,
+            ):
+                if event == "thinking":
+                    if not any(step.get("stage") == payload.get("stage") for step in thinking_steps):
+                        thinking_steps.append(payload)
+                    yield event, payload
+                elif event == "delta":
+                    parts.append(payload["content"])
+                    yield event, payload
         reply = "".join(parts)
         if not reply.strip():
             raise ValueError("模型返回空内容")
-        result = await _save_turn(db, conversation, data, user_id, reply)
+        result = await _save_turn(
+            db, conversation, data, user_id, reply,
+            thinking_steps=thinking_steps or None,
+            thinking_duration=max(1, round(time.monotonic() - thinking_started))
+            if thinking_steps else None,
+        )
         await db.commit()
         committed = True
         yield "done", result.model_dump(mode="json")

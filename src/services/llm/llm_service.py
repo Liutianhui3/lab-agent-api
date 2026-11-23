@@ -2,11 +2,11 @@
 
 from collections.abc import AsyncIterator, Sequence
 from uuid import UUID
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from langchain_core.messages import BaseMessage
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from schemas.agent import LaboratoryQuery, RouteDecision
+from schemas.agent import RouteDecision
 from services.llm.llm_client import create_llm
 
 llm = create_llm()
@@ -16,16 +16,6 @@ async def classify_request(messages: Sequence[BaseMessage], *, enable_thinking: 
     router = llm.with_structured_output(RouteDecision, method="function_calling")
     decision = await router.ainvoke(list(messages), extra_body={"enable_thinking": enable_thinking})
     return RouteDecision.model_validate(decision)
-
-
-async def plan_laboratory_query(
-    messages: Sequence[BaseMessage], *, enable_thinking: bool = False,
-) -> LaboratoryQuery:
-    planner = llm.with_structured_output(LaboratoryQuery, method="function_calling")
-    result = await planner.ainvoke(
-        list(messages), extra_body={"enable_thinking": enable_thinking}
-    )
-    return LaboratoryQuery.model_validate(result)
 
 
 async def generate_scope_response(messages: Sequence[BaseMessage], *, enable_thinking: bool = False) -> str:
@@ -40,7 +30,7 @@ async def chat(
 ) -> str:
     if not messages:
         raise ValueError("messages 不能为空")
-    from services.agent import workflow
+    from services.workflows.supervisor import workflow
 
     return await workflow.run(
         messages, enable_thinking=enable_thinking, db=db, user_role=user_role, user_id=user_id
