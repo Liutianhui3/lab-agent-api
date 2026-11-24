@@ -1,0 +1,56 @@
+name: lab-agent
+services:
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    command: [redis-server, --appendonly, 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  api:
+    image: ${API_IMAGE:?Set API_IMAGE in .env}
+    restart: unless-stopped
+    env_file: backend.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      TZ: Asia/Shanghai
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - uploads:/app/uploads
+      - app-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 30s
+  web:
+    image: ${WEB_IMAGE:?Set WEB_IMAGE in .env}
+    restart: unless-stopped
+    ports:
+      - '8080:80'
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1/healthz]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+volumes:
+  redis-data:
+  uploads:
+  app-data:
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
