@@ -109,3 +109,15 @@ class ReservationCreateRequest(BaseModel):
 class ReservationStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal[1, 2, 3] = Field(description="1-同意，2-拒绝，3-取消")
+
+
+class ReservationApplicationDraft(BaseModel):
+    """Natural language extraction only; identity and database IDs are never model supplied."""
+    model_config = ConfigDict(extra="forbid")
+    lab_keyword: str | None = None
+    equipment_keyword: str | None = None
+    date: Date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    remark: str | None = None
+    clarification: str | None = None

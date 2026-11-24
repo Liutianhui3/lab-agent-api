@@ -41,7 +41,7 @@ async def chat(
             if not isinstance(reply, str) or not reply.strip():
                 raise ValueError("模型返回了空内容或非文本内容")
         except Exception as exc:
-            logger.warning("聊天模型调用失败：%s", type(exc).__name__)
+            logger.warning("聊天工作流执行失败：%s", type(exc).__name__, exc_info=True)
             raise AppException(
                 code=5020, message="模型服务暂时不可用，请稍后重试", status_code=502
             ) from exc

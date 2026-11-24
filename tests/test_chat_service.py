@@ -14,7 +14,7 @@ from core.exceptions import AppException, NotFoundException
 from models.conversation import Conversation
 from models.message import Message
 from models.user import User
-from schemas.agent import RouteDecision
+from agent_fakes import call, model
 from schemas.chat import ChatRequest
 from services.chat_service import chat, prepare_chat_stream
 from services.llm import llm_service
@@ -50,10 +50,23 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.db.commit()
         self.model.side_effect = self.original_chat
 
-        with patch.object(llm_service, "classify_request", side_effect=[
-            RouteDecision(intent="user_profile_query", route_reason="本人邮箱和角色", profile_fields=["email", "role"]),
-            RouteDecision(intent="user_profile_query", route_reason="追问本人手机号", profile_fields=["phone"]),
-        ]):
+        from services.workflows.user.agents import profile_agent
+        from services.workflows.user.tools import profile_tools
+
+        async def answer_from_tools(messages, **kwargs):
+            from types import SimpleNamespace
+            result = await profile_tools.get_my_profile.coroutine(runtime=SimpleNamespace(context=kwargs))
+            profile = result["profile"]
+            if "手机号" in messages[-1].content:
+                return "你的手机号：未填写。" if profile["phone"] is None else profile["phone"]
+            return f"- 邮箱：{profile['email']}\n- 角色：学生"
+
+        with patch.object(profile_agent, "run", side_effect=answer_from_tools), patch.object(llm_service, "llm", model(
+            call("query_profiles", {"request": "我的邮箱和角色是什么？"}),
+            AIMessage(content="- 邮箱：self@example.com\n- 角色：学生"),
+            call("query_profiles", {"request": "那我的手机号呢？"}, identity="call-2"),
+            AIMessage(content="你的手机号：未填写。"),
+        )):
             reply = await chat(
                 self.db, ChatRequest(content="我的邮箱和角色是什么？"), self.user_id, role="student",
             )

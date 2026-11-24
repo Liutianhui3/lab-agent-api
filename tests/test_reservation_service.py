@@ -130,12 +130,13 @@ class ReservationServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.db.commit()
         await self.reject()
 
-    async def test_all_user_roles_can_reserve(self):
-        for index, role in enumerate(("student", "admin")):
-            with self.subTest(role=role):
-                self.user.role = role
-                await self.db.commit()
-                await self.create(date=self.day + timedelta(days=index))
+    async def test_only_student_can_reserve(self):
+        self.user.role = "admin"
+        await self.db.commit()
+        with self.assertRaises(AppException) as error:
+            await self.create()
+        self.assertEqual(error.exception.status_code, 403)
+
 
     async def test_unconfigured_opening_hours(self):
         self.lab.open_time = None

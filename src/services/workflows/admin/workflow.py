@@ -6,6 +6,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.user import User
+from langchain_core.messages import BaseMessage
+from collections.abc import Sequence
+from services.workflows.user.agents import profile_agent
 
 
 async def run(*, db: AsyncSession | None, action: str, user_identifier: str | None = None, fields: dict | None = None) -> str:
@@ -46,3 +49,16 @@ def _public_user(user: User) -> dict:
     return {"id": str(user.id), "username": user.username, "name": user.name,
             "email": user.email, "phone": user.phone, "role": user.role,
             "status": user.status, "avatar": user.avatar}
+
+
+async def query_profiles(
+    messages: Sequence[BaseMessage], *, db: AsyncSession | None,
+    user_id: UUID | None, user_role: str, enable_thinking: bool = False,
+) -> str:
+    """Reuse the profile agent with the authenticated administrator context."""
+    if user_role != "admin":
+        return "无权查询其他用户的资料。"
+    return await profile_agent.run(
+        messages, db=db, user_id=user_id, user_role=user_role,
+        enable_thinking=enable_thinking,
+    )

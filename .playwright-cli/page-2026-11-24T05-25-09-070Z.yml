@@ -1,0 +1,20 @@
+- generic [ref=f1e3]:
+  - heading "确认预约申请" [level=3] [ref=f1e8]
+  - paragraph [ref=f1e9]: 核对预约信息，点击确认后提交审核。 如需调整，请在对话中重新提出需求。
+  - generic [ref=f1e10]:
+    - generic [ref=f1e11]:
+      - term [ref=f1e12]: 实验室
+      - definition [ref=f1e13]: 光学实验室
+    - generic [ref=f1e14]:
+      - term [ref=f1e15]: 设备
+      - definition [ref=f1e16]: 光谱仪
+    - generic [ref=f1e17]:
+      - term [ref=f1e18]: 预约日期
+      - definition [ref=f1e19]: 2026-12-01
+    - generic [ref=f1e20]:
+      - term [ref=f1e21]: 时间（北京时间）
+      - definition [ref=f1e22]: 10:00:00 — 11:00:00
+    - generic [ref=f1e23]:
+      - term [ref=f1e24]: 备注
+      - definition [ref=f1e25]: 光谱实验
+  - button "确认预约" [ref=f1e27] [cursor=pointer]
